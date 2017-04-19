@@ -28,18 +28,6 @@
 
 (bootstrap-imports)
 
-(defmacro letlocals
-  [& body]
-  (let [[tobind lexpr] (split-at (dec (count body)) body)
-        binded (vec (mapcat (fn [e]
-                              (if (and (list? e) (= 'bind (first e)))
-                                [(second e) (last e)]
-                                ['_ e]
-                                ))
-                            tobind))]
-    `(let ~binded
-       ~(first lexpr))))
-
 (deftest test-memory-map-get-tuples
   (t/with-local-cluster [cluster]
     (with-drpc [drpc]
@@ -297,6 +285,9 @@
                            (. collector emit (str (. tuple getString 0) "!")))))
         (bind word-counts
           (.. topo
+              (setResourceDefaults (doto (org.apache.storm.trident.operation.DefaultResourceDeclarer.)
+                                     (.setMemoryLoad 0 0)
+                                     (.setCPULoad 0)))
               (newStream "words" feeder)
               (parallelismHint 5)
               (setCPULoad 20)

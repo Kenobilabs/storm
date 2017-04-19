@@ -19,7 +19,7 @@
 package org.apache.storm.cluster;
 
 /**
- * This class is intended to provide runtime-context to StateStorageFactory
+ * This class is intended to provide runtime-context to ClusterStateFactory
  * implementors, giving information such as what daemon is creating it.
  */
 public class ClusterStateContext {

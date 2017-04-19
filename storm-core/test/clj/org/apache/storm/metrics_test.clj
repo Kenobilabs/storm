@@ -25,12 +25,10 @@
   (:import [org.apache.storm.metric.api.rpc CountShellMetric])
   (:import [org.apache.storm.utils Utils])
   
-  (:use [org.apache.storm testing config])
-  (:use [org.apache.storm.internal clojure])
+  (:use [org.apache.storm testing clojure config])
   (:use [org.apache.storm.daemon common])
   (:use [org.apache.storm.metric testing])
-  (:import [org.apache.storm Thrift])
-  (:import [org.apache.storm.utils Utils]))
+  (:require [org.apache.storm [thrift :as thrift]]))
 
 (defbolt acking-bolt {} {:prepare true}
   [conf context collector]  
@@ -107,12 +105,9 @@
                            "storm.zookeeper.session.timeout" 60000
                            }]
     (let [feeder (feeder-spout ["field1"])
-          topology (Thrift/buildTopology
-                    {"1" (Thrift/prepareSpoutDetails feeder)}
-                    {"2" (Thrift/prepareBoltDetails
-                           {(Utils/getGlobalStreamId "1" nil)
-                            (Thrift/prepareGlobalGrouping)}
-                           count-acks)})]
+          topology (thrift/mk-topology
+                    {"1" (thrift/mk-spout-spec feeder)}
+                    {"2" (thrift/mk-bolt-spec {"1" :global} count-acks)})]      
       (submit-local-topology (:nimbus cluster) "metrics-tester" {} topology)
 
       (.feed feeder ["a"] 1)
@@ -138,12 +133,9 @@
                            "storm.zookeeper.session.timeout" 60000
                            }]
     (let [feeder (feeder-spout ["field1"])
-          topology (Thrift/buildTopology
-                     {"1" (Thrift/prepareSpoutDetails feeder)}
-                     {"2" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "1" nil)
-                             (Thrift/prepareAllGrouping)}
-                            count-acks (Integer. 1) {TOPOLOGY-TASKS 2})})]
+          topology (thrift/mk-topology
+                     {"1" (thrift/mk-spout-spec feeder)}
+                     {"2" (thrift/mk-bolt-spec {"1" :all} count-acks :p 1 :conf {TOPOLOGY-TASKS 2})})]
       (submit-local-topology (:nimbus cluster) "metrics-tester-with-multitasks" {} topology)
 
       (.feed feeder ["a"] 1)
@@ -162,9 +154,10 @@
       (assert-buckets! "2" "my-custom-metric" [1 0 0 0 0 0 2] cluster))))
 
 (defn mk-shell-bolt-with-metrics-spec
-  [inputs command file]
-    (Thrift/prepareBoltDetails inputs
-         (PythonShellMetricsBolt. command file)))
+  [inputs command & kwargs]
+  (let [command (into-array String command)]
+    (apply thrift/mk-bolt-spec inputs
+         (PythonShellMetricsBolt. command) kwargs)))
 
 (deftest test-custom-metric-with-multilang-py
   (with-simulated-time-local-cluster 
@@ -174,12 +167,9 @@
                        "storm.zookeeper.session.timeout" 60000
                        }]
     (let [feeder (feeder-spout ["field1"])
-          topology (Thrift/buildTopology
-                     {"1" (Thrift/prepareSpoutDetails feeder)}
-                     {"2" (mk-shell-bolt-with-metrics-spec
-                            {(Utils/getGlobalStreamId "1" nil)
-                             (Thrift/prepareGlobalGrouping)}
-                            "python" "tester_bolt_metrics.py")})]
+          topology (thrift/mk-topology
+                     {"1" (thrift/mk-spout-spec feeder)}
+                     {"2" (mk-shell-bolt-with-metrics-spec {"1" :global} ["python" "tester_bolt_metrics.py"])})]
       (submit-local-topology (:nimbus cluster) "shell-metrics-tester" {} topology)
 
       (.feed feeder ["a"] 1)
@@ -199,8 +189,9 @@
       )))
 
 (defn mk-shell-spout-with-metrics-spec
-  [command file]
-    (Thrift/prepareSpoutDetails (PythonShellMetricsSpout. command file)))
+  [command & kwargs]
+  (let [command (into-array String command)]
+    (apply thrift/mk-spout-spec (PythonShellMetricsSpout. command) kwargs)))
 
 (deftest test-custom-metric-with-spout-multilang-py
   (with-simulated-time-local-cluster 
@@ -208,12 +199,9 @@
                        [{"class" "clojure.storm.metric.testing.FakeMetricConsumer"}]
                        "storm.zookeeper.connection.timeout" 30000
                        "storm.zookeeper.session.timeout" 60000}]
-    (let [topology (Thrift/buildTopology
-                     {"1" (mk-shell-spout-with-metrics-spec "python" "tester_spout_metrics.py")}
-                     {"2" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "1" nil)
-                             (Thrift/prepareAllGrouping)}
-                            count-acks)})]
+    (let [topology (thrift/mk-topology
+                     {"1" (mk-shell-spout-with-metrics-spec ["python" "tester_spout_metrics.py"])}
+                     {"2" (thrift/mk-bolt-spec {"1" :all} count-acks)})]
       (submit-local-topology (:nimbus cluster) "shell-spout-metrics-tester" {} topology)
 
       (advance-cluster-time cluster 7)
@@ -228,12 +216,9 @@
                            TOPOLOGY-STATS-SAMPLE-RATE 1.0
                            TOPOLOGY-BUILTIN-METRICS-BUCKET-SIZE-SECS 60}]
     (let [feeder (feeder-spout ["field1"])
-          topology (Thrift/buildTopology
-                    {"myspout" (Thrift/prepareSpoutDetails feeder)}
-                    {"mybolt" (Thrift/prepareBoltDetails
-                                {(Utils/getGlobalStreamId "myspout" nil)
-                                 (Thrift/prepareShuffleGrouping)}
-                                acking-bolt)})]
+          topology (thrift/mk-topology
+                    {"myspout" (thrift/mk-spout-spec feeder)}
+                    {"mybolt" (thrift/mk-bolt-spec {"myspout" :shuffle} acking-bolt)})]      
       (submit-local-topology (:nimbus cluster) "metrics-tester" {} topology)
       
       (.feed feeder ["a"] 1)
@@ -270,26 +255,23 @@
     (let [feeder (feeder-spout ["field1"])
           tracker (AckFailMapTracker.)
           _ (.setAckFailDelegate feeder tracker)
-          topology (Thrift/buildTopology
-                    {"myspout" (Thrift/prepareSpoutDetails feeder)}
-                    {"mybolt" (Thrift/prepareBoltDetails
-                                {(Utils/getGlobalStreamId "myspout" nil)
-                                 (Thrift/prepareShuffleGrouping)}
-                                ack-every-other)})]
+          topology (thrift/mk-topology
+                    {"myspout" (thrift/mk-spout-spec feeder)}
+                    {"mybolt" (thrift/mk-bolt-spec {"myspout" :shuffle} ack-every-other)})]      
       (submit-local-topology (:nimbus cluster)
                              "metrics-tester"
-                             {}
+                             {TOPOLOGY-DEBUG true}
                              topology)
       
       (.feed feeder ["a"] 1)
       (advance-cluster-time cluster 6)
-      (assert-acked tracker 1)
       (assert-buckets! "myspout" "__fail-count/default" [] cluster)
       (assert-buckets! "myspout" "__ack-count/default" [1] cluster)
       (assert-buckets! "myspout" "__emit-count/default" [1] cluster)
       (assert-buckets! "myspout" "__transfer-count/default" [1] cluster)            
       (assert-buckets! "mybolt" "__ack-count/myspout:default" [1] cluster)     
       (assert-buckets! "mybolt" "__execute-count/myspout:default" [1] cluster)
+      (assert-acked tracker 1)
 
       (.feed feeder ["b"] 2)      
       (advance-cluster-time cluster 5)
@@ -325,26 +307,24 @@
     (let [feeder (feeder-spout ["field1"])
           tracker (AckFailMapTracker.)
           _ (.setAckFailDelegate feeder tracker)
-          topology (Thrift/buildTopology
-                    {"myspout" (Thrift/prepareSpoutDetails feeder)}
-                    {"mybolt" (Thrift/prepareBoltDetails
-                                {(Utils/getGlobalStreamId "myspout" nil)
-                                 (Thrift/prepareGlobalGrouping)}
-                                ack-every-other)})]
+          topology (thrift/mk-topology
+                    {"myspout" (thrift/mk-spout-spec feeder)}
+                    {"mybolt" (thrift/mk-bolt-spec {"myspout" :global} ack-every-other)})]      
       (submit-local-topology (:nimbus cluster)
                              "timeout-tester"
-                             {TOPOLOGY-MESSAGE-TIMEOUT-SECS 10}
+                             {TOPOLOGY-MESSAGE-TIMEOUT-SECS 10
+                              TOPOLOGY-DEBUG true}
                              topology)
       (.feed feeder ["a"] 1)
       (.feed feeder ["b"] 2)
       (.feed feeder ["c"] 3)
       (advance-cluster-time cluster 9)
-      (assert-acked tracker 1 3)
       (assert-buckets! "myspout" "__ack-count/default" [2] cluster)
       (assert-buckets! "myspout" "__emit-count/default" [3] cluster)
       (assert-buckets! "myspout" "__transfer-count/default" [3] cluster)
       (assert-buckets! "mybolt" "__ack-count/myspout:default" [2] cluster)
       (assert-buckets! "mybolt" "__execute-count/myspout:default" [3] cluster)
+      (assert-acked tracker 1 3)
       
       (is (not (.isFailed tracker 2)))
       (advance-cluster-time cluster 30)
@@ -362,8 +342,8 @@
                            [{"class" "clojure.storm.metric.testing.FakeMetricConsumer"}]
                            TOPOLOGY-BUILTIN-METRICS-BUCKET-SIZE-SECS 60}]
     (let [feeder (feeder-spout ["field1"])
-          topology (Thrift/buildTopology
-                    {"1" (Thrift/prepareSpoutDetails feeder)}
+          topology (thrift/mk-topology
+                    {"1" (thrift/mk-spout-spec feeder)}
                     {})]      
       (submit-local-topology (:nimbus cluster) "metrics-tester" {} topology)
 

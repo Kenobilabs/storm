@@ -28,7 +28,9 @@ public class NGrouping implements CustomStreamGrouping {
     int _n;
     List<Integer> _outTasks;
     
-    public NGrouping(Integer n) {_n = n;}
+    public NGrouping(int n) {
+        _n = n;
+    }
     
     @Override
     public void prepare(WorkerTopologyContext context, GlobalStreamId stream, List<Integer> targetTasks) {

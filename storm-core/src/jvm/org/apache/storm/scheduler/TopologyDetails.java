@@ -22,7 +22,6 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import org.apache.storm.Config;
 import org.apache.storm.generated.Bolt;
@@ -118,7 +117,7 @@ public class TopologyDetails {
         return ret;
     }
 
-    public Set<ExecutorDetails> getExecutors() {
+    public Collection<ExecutorDetails> getExecutors() {
         return this.executorToComponent.keySet();
     }
 

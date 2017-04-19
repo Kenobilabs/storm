@@ -15,11 +15,9 @@
 ;; limitations under the License.
 (ns org.apache.storm.tick-tuple-test
   (:use [clojure test])
-  (:use [org.apache.storm testing config])
-  (:use [org.apache.storm.internal clojure])
+  (:use [org.apache.storm testing clojure config])
   (:use [org.apache.storm.daemon common])
-  (:import [org.apache.storm Thrift])
-  (:import [org.apache.storm.utils Utils]))
+  (:require [org.apache.storm [thrift :as thrift]]))
 
 (defbolt noop-bolt ["tuple"] {:prepare true}
   [conf context collector]
@@ -33,12 +31,9 @@
 
 (deftest test-tick-tuple-works-with-system-bolt
   (with-simulated-time-local-cluster [cluster]
-    (let [topology (Thrift/buildTopology
-                    {"1" (Thrift/prepareSpoutDetails noop-spout)}
-                    {"2" (Thrift/prepareBoltDetails
-                           {(Utils/getGlobalStreamId "1" nil)
-                            (Thrift/prepareFieldsGrouping ["tuple"])}
-                           noop-bolt)})]
+    (let [topology (thrift/mk-topology
+                    {"1" (thrift/mk-spout-spec noop-spout)}
+                    {"2" (thrift/mk-bolt-spec {"1" ["tuple"]} noop-bolt)})]
       (try
         (submit-local-topology (:nimbus cluster)
                                "test"

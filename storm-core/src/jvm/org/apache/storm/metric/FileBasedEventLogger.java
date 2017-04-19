@@ -17,8 +17,9 @@
  */
 package org.apache.storm.metric;
 
+import org.apache.commons.lang.StringUtils;
+import org.apache.storm.Config;
 import org.apache.storm.task.TopologyContext;
-import org.apache.storm.utils.ConfigUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,7 +47,7 @@ public class FileBasedEventLogger implements IEventLogger {
 
     private void initLogWriter(Path logFilePath) {
         try {
-            LOG.info("logFilePath {}", logFilePath);
+            LOG.info("Event log path {}", logFilePath);
             eventLogPath = logFilePath;
             eventLogWriter = Files.newBufferedWriter(eventLogPath, StandardCharsets.UTF_8, StandardOpenOption.CREATE,
                                                      StandardOpenOption.WRITE, StandardOpenOption.APPEND);
@@ -77,22 +78,48 @@ public class FileBasedEventLogger implements IEventLogger {
         scheduler.scheduleAtFixedRate(task, FLUSH_INTERVAL_MILLIS, FLUSH_INTERVAL_MILLIS, TimeUnit.MILLISECONDS);
     }
 
+    private String getFirstNonNull(String... strings) {
+        for (String str : strings) {
+            if (str != null) {
+                return str;
+            }
+        }
+        return null;
+    }
+
+    private String getLogDir(Map stormConf) {
+        String logDir = getFirstNonNull(System.getProperty("storm.log.dir"),
+                                        (String) stormConf.get("storm.log.dir"));
+        if (logDir == null) {
+            logDir = Paths.get(getFirstNonNull(System.getProperty("storm.home"),
+                                               System.getProperty("storm.local.dir"),
+                                               (String) stormConf.get("storm.local.dir"),
+                                               StringUtils.EMPTY),
+                               "logs").toString();
+        }
+        return logDir;
+    }
 
     @Override
     public void prepare(Map stormConf, TopologyContext context) {
+        String workersArtifactDir; // workers artifact directory
         String stormId = context.getStormId();
         int port = context.getThisWorkerPort();
-
+        if ((workersArtifactDir = (String) stormConf.get(Config.STORM_WORKERS_ARTIFACTS_DIR)) == null) {
+            workersArtifactDir = "workers-artifacts";
+        }
         /*
          * Include the topology name & worker port in the file name so that
          * multiple event loggers can log independently.
          */
-        String workersArtifactRoot = ConfigUtils.workerArtifactsRoot(stormConf, stormId, port);
-
-        Path path = Paths.get(workersArtifactRoot, "events.log");
+        Path path = Paths.get(workersArtifactDir, stormId, Integer.toString(port), "events.log");
+        if (!path.isAbsolute()) {
+            path = Paths.get(getLogDir(stormConf), workersArtifactDir,
+                             stormId, Integer.toString(port), "events.log");
+        }
         File dir = path.toFile().getParentFile();
         if (!dir.exists()) {
-             dir.mkdirs();
+            dir.mkdirs();
         }
         initLogWriter(path);
         setUpFlushTask();

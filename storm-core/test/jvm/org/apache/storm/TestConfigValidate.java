@@ -18,8 +18,7 @@
 
 package org.apache.storm;
 
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
+import org.apache.storm.generated.InvalidTopologyException;
 import org.apache.storm.utils.Utils;
 import org.apache.storm.validation.ConfigValidation;
 import org.apache.storm.validation.ConfigValidation.*;
@@ -33,6 +32,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -59,7 +59,7 @@ public class TestConfigValidate {
         conf.put(Config.PACEMAKER_AUTH_METHOD, "invalid");
         ConfigValidation.validateFields(conf);
     }
-    
+
     @Test
     public void validConfigTest() throws InstantiationException, IllegalAccessException, NoSuchFieldException, NoSuchMethodException, InvocationTargetException {
 
@@ -80,6 +80,21 @@ public class TestConfigValidate {
         conf.put(Config.STORM_MESSAGING_NETTY_AUTHENTICATION, "invalid");
 
         ConfigValidation.validateFields(conf);
+    }
+
+    @Test(expected = InvalidTopologyException.class)
+    public void testValidateTopologyBlobStoreMap() throws InvalidTopologyException {
+        Map<String,Map> stormConf = new HashMap<>();
+        Map<String,Map> topologyMap = new HashMap<>();
+        topologyMap.put("key1", new HashMap<String,String>());
+        topologyMap.put("key2", new HashMap<String,String>());
+        stormConf.put(Config.TOPOLOGY_BLOBSTORE_MAP, topologyMap);
+        HashSet<String> keySet = new HashSet<>();
+        keySet.add("key1");
+        keySet.add("key2");
+        Utils.validateTopologyBlobStoreMap(stormConf, keySet);
+        keySet.remove("key2");
+        Utils.validateTopologyBlobStoreMap(stormConf, keySet);
     }
 
     @Test
@@ -127,6 +142,26 @@ public class TestConfigValidate {
         ConfigValidation.validateFields(conf);
 
         conf.put(Config.ISOLATION_SCHEDULER_MACHINES, 42);
+        try {
+            ConfigValidation.validateFields(conf);
+            Assert.fail("Expected Exception not Thrown");
+        } catch (IllegalArgumentException ex) {
+        }
+    }
+
+    @Test
+    public void testSupervisorSchedulerMetaIsStringMap() throws InvocationTargetException, NoSuchMethodException, NoSuchFieldException, InstantiationException, IllegalAccessException {
+        Map<String, Object> conf = new HashMap<String, Object>();
+        Map<String, Object> schedulerMeta = new HashMap<String, Object>();
+        conf.put(Config.SUPERVISOR_SCHEDULER_META, schedulerMeta);
+        ConfigValidation.validateFields(conf);
+
+        schedulerMeta.put("foo", "bar");
+
+        conf.put(Config.SUPERVISOR_SCHEDULER_META, schedulerMeta);
+        ConfigValidation.validateFields(conf);
+
+        schedulerMeta.put("baz", true);
         try {
             ConfigValidation.validateFields(conf);
             Assert.fail("Expected Exception not Thrown");
@@ -230,24 +265,6 @@ public class TestConfigValidate {
         testList.add(new Long("4"));
         conf.put("eee", testList);
         Utils.isValidConf(conf);
-    }
-
-    @Test
-    public void testKryoRegValidator() {
-        KryoRegValidator validator = new KryoRegValidator();
-
-        // fail cases
-        Object[] failCases = {ImmutableMap.of("f", "g"), ImmutableList.of(1), Arrays.asList(ImmutableMap.of("a", 1))};
-        for (Object value : failCases) {
-            try {
-                validator.validateField("test", value);
-                Assert.fail("Expected Exception not Thrown for value: " + value);
-            } catch (IllegalArgumentException e) {
-            }
-        }
-
-        // pass cases
-        validator.validateField("test", Arrays.asList("a", "b", "c", ImmutableMap.of("d", "e"), ImmutableMap.of("f", "g")));
     }
 
     @Test

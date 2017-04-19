@@ -15,13 +15,13 @@
 ;; limitations under the License.
 
 (ns org.apache.storm.blobstore
-  (:import [org.apache.storm.utils Utils ConfigUtils])
+  (:import [org.apache.storm.utils Utils])
   (:import [org.apache.storm.blobstore ClientBlobStore])
-  (:use [org.apache.storm config util]))
+  (:use [org.apache.storm config]))
 
 (defmacro with-configured-blob-client
   [client-sym & body]
-  `(let [conf# (clojurify-structure (ConfigUtils/readStormConfig))
+  `(let [conf# (read-storm-config)
          ^ClientBlobStore ~client-sym (Utils/getClientBlobStore conf#)]
      (try
        ~@body

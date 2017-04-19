@@ -15,19 +15,15 @@
 ;; limitations under the License.
 (ns integration.org.apache.storm.testing4j-test
   (:use [clojure.test])
-  (:use [org.apache.storm config testing util])
-  (:use [org.apache.storm.internal clojure])
+  (:use [org.apache.storm config clojure testing util])
   (:require [integration.org.apache.storm.integration-test :as it])
-  (:require [org.apache.storm.internal.thrift :as thrift])
-  (:import [org.apache.storm Testing Config ILocalCluster]
-           [org.apache.storm.generated GlobalStreamId])
+  (:require [org.apache.storm.thrift :as thrift])
+  (:import [org.apache.storm Testing Config ILocalCluster])
   (:import [org.apache.storm.tuple Values Tuple])
   (:import [org.apache.storm.utils Time Utils])
   (:import [org.apache.storm.testing MkClusterParam TestJob MockedSources TestWordSpout
             TestWordCounter TestGlobalCount TestAggregatesCounter CompleteTopologyParam
-            AckFailMapTracker MkTupleParam])
-  (:import [org.apache.storm.utils Utils])
-  (:import [org.apache.storm Thrift]))
+            AckFailMapTracker MkTupleParam]))
 
 (deftest test-with-simulated-time
   (is (= false (Time/isSimulating)))
@@ -63,30 +59,15 @@
                                                                 (is (Time/isSimulating)))))
     (is (not (Time/isSimulating)))))
 
-(deftest test-complete-topology
-  (doseq [zmq-on? [true false]
-          :let [daemon-conf (doto (Config.)
-                              (.put STORM-LOCAL-MODE-ZMQ zmq-on?))
-                mk-cluster-param (doto (MkClusterParam.)
-                                   (.setSupervisors (int 4))
-                                   (.setDaemonConf daemon-conf))]]
-    (Testing/withSimulatedTimeLocalCluster
-     (reify TestJob
+(def complete-topology-testjob
+  (reify TestJob
        (^void run [this ^ILocalCluster cluster]
-         (let [topology (Thrift/buildTopology
-                         {"1" (Thrift/prepareSpoutDetails (TestWordSpout. true) (Integer. 3))}
-                         {"2" (Thrift/prepareBoltDetails
-                                {(GlobalStreamId. "1" Utils/DEFAULT_STREAM_ID)
-                                 (Thrift/prepareFieldsGrouping ["word"])}
-                                (TestWordCounter.) (Integer. 4))
-                          "3" (Thrift/prepareBoltDetails
-                                {(GlobalStreamId. "1" Utils/DEFAULT_STREAM_ID)
-                                 (Thrift/prepareGlobalGrouping)}
-                                (TestGlobalCount.))
-                          "4" (Thrift/prepareBoltDetails
-                                {(GlobalStreamId. "2" Utils/DEFAULT_STREAM_ID)
-                                 (Thrift/prepareGlobalGrouping)}
-                                (TestAggregatesCounter.))})
+         (let [topology (thrift/mk-topology
+                         {"1" (thrift/mk-spout-spec (TestWordSpout. true) :parallelism-hint 3)}
+                         {"2" (thrift/mk-bolt-spec {"1" ["word"]} (TestWordCounter.) :parallelism-hint 4)
+                          "3" (thrift/mk-bolt-spec {"1" :global} (TestGlobalCount.))
+                          "4" (thrift/mk-bolt-spec {"2" :global} (TestAggregatesCounter.))
+                          })
                mocked-sources (doto (MockedSources.)
                                 (.addMockData "1" (into-array Values [(Values. (into-array ["nathan"]))
                                                                       (Values. (into-array ["bob"]))
@@ -109,7 +90,19 @@
                   (Testing/readTuples results "3")))
            (is (= [[1] [2] [3] [4]]
                   (Testing/readTuples results "4")))
-           ))))))
+           ))))
+
+(deftest test-complete-topology
+  (doseq [zmq-on? [true false]
+          :let [daemon-conf (doto (Config.)
+                              (.put STORM-LOCAL-MODE-ZMQ zmq-on?))
+                mk-cluster-param (doto (MkClusterParam.)
+                                   (.setSupervisors (int 4))
+                                   (.setDaemonConf daemon-conf))]]
+    (Testing/withSimulatedTimeLocalCluster
+      mk-cluster-param complete-topology-testjob )
+    (Testing/withLocalCluster
+      mk-cluster-param complete-topology-testjob)))
 
 (deftest test-with-tracked-cluster
   (Testing/withTrackedCluster
@@ -118,27 +111,19 @@
        (let [[feeder checker] (it/ack-tracking-feeder ["num"])
              tracked (Testing/mkTrackedTopology
                       cluster
-                      (Thrift/buildTopology
-                       {"1" (Thrift/prepareSpoutDetails feeder)}
-                       {"2" (Thrift/prepareBoltDetails
-                              {(GlobalStreamId. "1" Utils/DEFAULT_STREAM_ID)
-                               (Thrift/prepareShuffleGrouping)}
-                              it/identity-bolt)
-                        "3" (Thrift/prepareBoltDetails
-                              {(GlobalStreamId. "1" Utils/DEFAULT_STREAM_ID)
-                               (Thrift/prepareShuffleGrouping)}
-                              it/identity-bolt)
-                        "4" (Thrift/prepareBoltDetails
-                             {(GlobalStreamId. "2" Utils/DEFAULT_STREAM_ID)
-                              (Thrift/prepareShuffleGrouping)
-                              (GlobalStreamId. "3" Utils/DEFAULT_STREAM_ID)
-                              (Thrift/prepareShuffleGrouping)}
+                      (topology
+                       {"1" (spout-spec feeder)}
+                       {"2" (bolt-spec {"1" :shuffle} it/identity-bolt)
+                        "3" (bolt-spec {"1" :shuffle} it/identity-bolt)
+                        "4" (bolt-spec
+                             {"2" :shuffle
+                              "3" :shuffle}
                              (it/agg-bolt 4))}))]
          (.submitTopology cluster
                           "test-acking2"
-                          (Config.)
+                          (doto (Config.)
+                            (.put TOPOLOGY-DEBUG true))
                           (.getTopology tracked))
-         (advance-cluster-time (.getState cluster) 11)
          (.feed feeder [1])
          (Testing/trackedWait tracked (int 1))
          (checker 0)
@@ -159,25 +144,23 @@
          (let [feeder (feeder-spout ["field1"])
                tracker (AckFailMapTracker.)
                _ (.setAckFailDelegate feeder tracker)
-               topology (Thrift/buildTopology
-                         {"1" (Thrift/prepareSpoutDetails feeder)}
-                         {"2" (Thrift/prepareBoltDetails
-                                {(GlobalStreamId. "1" Utils/DEFAULT_STREAM_ID)
-                                 (Thrift/prepareGlobalGrouping)}
-                                it/ack-every-other)})
+               topology (thrift/mk-topology
+                         {"1" (thrift/mk-spout-spec feeder)}
+                         {"2" (thrift/mk-bolt-spec {"1" :global} it/ack-every-other)})
                storm-conf (doto (Config.)
                             (.put TOPOLOGY-MESSAGE-TIMEOUT-SECS 10))]
            (.submitTopology cluster
                             "timeout-tester"
                             storm-conf
                             topology)
+           ;;Wait for the topology to come up
            (.feed feeder ["a"] 1)
            (.feed feeder ["b"] 2)
            (.feed feeder ["c"] 3)
            (Testing/advanceClusterTime cluster (int 9))
            (it/assert-acked tracker 1 3)
            (is (not (.isFailed tracker 2)))
-           (Testing/advanceClusterTime cluster (int 12))
+           (Testing/advanceClusterTime cluster (int 20))
            (it/assert-failed tracker 2)
            ))))))
 
@@ -193,43 +176,45 @@
           (let [feeder (feeder-spout ["field1"])
                 tracker (AckFailMapTracker.)
                 _ (.setAckFailDelegate feeder tracker)
-                topology (Thrift/buildTopology
-                           {"1" (Thrift/prepareSpoutDetails feeder)}
-                           {"2" (Thrift/prepareBoltDetails
-                                  {(GlobalStreamId. "1" Utils/DEFAULT_STREAM_ID)
-                                   (Thrift/prepareGlobalGrouping)}
-                                  it/ack-every-other)})
+                topology (thrift/mk-topology
+                           {"1" (thrift/mk-spout-spec feeder)}
+                           {"2" (thrift/mk-bolt-spec {"1" :global} it/ack-every-other)})
                 storm-conf (doto (Config.)
+                             (.put TOPOLOGY-DEBUG true)
                              (.put TOPOLOGY-MESSAGE-TIMEOUT-SECS 10)
                              (.put TOPOLOGY-ENABLE-MESSAGE-TIMEOUTS false))]
             (.submitTopology cluster
               "disable-timeout-tester"
               storm-conf
               topology)
+            ;;Wait for the topology to come up
             (.feed feeder ["a"] 1)
             (.feed feeder ["b"] 2)
             (.feed feeder ["c"] 3)
             (Testing/advanceClusterTime cluster (int 9))
             (it/assert-acked tracker 1 3)
             (is (not (.isFailed tracker 2)))
-            (Testing/advanceClusterTime cluster (int 12))
+            (Testing/advanceClusterTime cluster (int 20))
             (is (not (.isFailed tracker 2)))
             ))))))
 
 (deftest test-test-tuple
-  (testing "one-param signature"
-    (let [tuple (Testing/testTuple ["james" "bond"])]
-      (is (= ["james" "bond"] (.getValues tuple)))
-      (is (= Utils/DEFAULT_STREAM_ID (.getSourceStreamId tuple)))
-      (is (= ["field1" "field2"] (-> tuple .getFields .toList)))
-      (is (= "component" (.getSourceComponent tuple)))))
-   (testing "two-params signature"
-    (let [mk-tuple-param (doto (MkTupleParam.)
-                           (.setStream "test-stream")
-                           (.setComponent "test-component")
-                           (.setFields (into-array String ["fname" "lname"])))
-          tuple (Testing/testTuple ["james" "bond"] mk-tuple-param)]
-      (is (= ["james" "bond"] (.getValues tuple)))
-      (is (= "test-stream" (.getSourceStreamId tuple)))
-      (is (= ["fname" "lname"] (-> tuple .getFields .toList)))
-      (is (= "test-component" (.getSourceComponent tuple))))))
+  (letlocals
+   ;; test the one-param signature
+   (bind ^Tuple tuple (Testing/testTuple ["james" "bond"]))
+   (is (= ["james" "bond"] (.getValues tuple)))
+   (is (= Utils/DEFAULT_STREAM_ID (.getSourceStreamId tuple)))
+   (is (= ["field1" "field2"] (-> tuple .getFields .toList)))
+   (is (= "component" (.getSourceComponent tuple)))
+
+   ;; test the two-params signature
+   (bind mk-tuple-param (MkTupleParam.))
+   (doto mk-tuple-param
+     (.setStream "test-stream")
+     (.setComponent "test-component")
+     (.setFields (into-array String ["fname" "lname"])))
+   (bind ^Tuple tuple (Testing/testTuple ["james" "bond"] mk-tuple-param))
+   (is (= ["james" "bond"] (.getValues tuple)))
+   (is (= "test-stream" (.getSourceStreamId tuple)))
+   (is (= ["fname" "lname"] (-> tuple .getFields .toList)))
+   (is (= "test-component" (.getSourceComponent tuple)))))

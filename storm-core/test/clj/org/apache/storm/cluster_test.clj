@@ -18,39 +18,32 @@
            [org.apache.storm.nimbus NimbusInfo])
   (:import [org.apache.storm.daemon.common Assignment StormBase SupervisorInfo])
   (:import [org.apache.storm.generated NimbusSummary])
-  (:import [org.apache.zookeeper ZooDefs ZooDefs$Ids Watcher$Event$EventType])
+  (:import [org.apache.zookeeper ZooDefs ZooDefs$Ids])
   (:import [org.mockito Mockito])
   (:import [org.mockito.exceptions.base MockitoAssertionError])
   (:import [org.apache.curator.framework CuratorFramework CuratorFrameworkFactory CuratorFrameworkFactory$Builder])
-  (:import [org.apache.storm.utils Time Utils ZookeeperAuthInfo ConfigUtils])
-  (:import [org.apache.storm.cluster IStateStorage ZKStateStorage ClusterStateContext StormClusterStateImpl ClusterUtils])
-  (:import [org.apache.storm.zookeeper Zookeeper])
-  (:import [org.apache.storm.callback ZKStateChangedCallback])
-  (:import [org.apache.storm.testing.staticmocking MockedZookeeper MockedCluster])
+  (:import [org.apache.storm.utils Utils TestUtils ZookeeperAuthInfo])
+  (:import [org.apache.storm.cluster ClusterState])
+  (:require [org.apache.storm [zookeeper :as zk]])
   (:require [conjure.core])
   (:use [conjure core])
   (:use [clojure test])
-  (:use [org.apache.storm config util testing log converter])
-  (:use [org.apache.storm.internal thrift]))
+  (:use [org.apache.storm cluster config util testing thrift log]))
 
 (defn mk-config [zk-port]
-  (merge (clojurify-structure (ConfigUtils/readStormConfig))
-    {STORM-ZOOKEEPER-PORT zk-port
-     STORM-ZOOKEEPER-SERVERS ["localhost"]}))
+  (merge (read-storm-config)
+         {STORM-ZOOKEEPER-PORT zk-port
+          STORM-ZOOKEEPER-SERVERS ["localhost"]}))
 
 (defn mk-state
   ([zk-port] (let [conf (mk-config zk-port)]
-               (ClusterUtils/mkStateStorage conf conf nil (ClusterStateContext.))))
+               (mk-distributed-cluster-state conf :auth-conf conf)))
   ([zk-port cb]
-    (let [ret (mk-state zk-port)]
-      (.register ret cb)
-      ret)))
+     (let [ret (mk-state zk-port)]
+       (.register ret cb)
+       ret )))
 
-(defn mk-storm-state [zk-port] (ClusterUtils/mkStormClusterState (mk-config zk-port) nil (ClusterStateContext.)))
-
-(defn barr
-  [& vals]
-  (byte-array (map byte vals)))
+(defn mk-storm-state [zk-port] (mk-storm-cluster-state (mk-config zk-port)))
 
 (deftest test-basics
   (with-inprocess-zookeeper zk-port
@@ -105,27 +98,24 @@
 
 (defn mk-callback-tester []
   (let [last (atom nil)
-        cb (reify
-             ZKStateChangedCallback
-             (changed
-               [this type path]
-               (reset! last {:type type :path path})))]
+        cb (fn [type path]
+              (reset! last {:type type :path path}))]
     [last cb]
     ))
 
 (defn read-and-reset! [aatom]
   (let [time (System/currentTimeMillis)]
-    (loop []
-      (if-let [val @aatom]
-        (do
-          (reset! aatom nil)
-          val)
-        (do
-          (when (> (- (System/currentTimeMillis) time) 30000)
-            (throw (RuntimeException. "Waited too long for atom to change state")))
-          (Thread/sleep 10)
-          (recur))
-        ))))
+  (loop []
+    (if-let [val @aatom]
+      (do
+        (reset! aatom nil)
+        val)
+      (do
+        (when (> (- (System/currentTimeMillis) time) 30000)
+          (throw (RuntimeException. "Waited too long for atom to change state")))
+        (Thread/sleep 10)
+        (recur))
+      ))))
 
 (deftest test-callbacks
   (with-inprocess-zookeeper zk-port
@@ -138,7 +128,7 @@
       (is (= nil @state1-last-cb))
       (is (= nil @state2-last-cb))
       (.set-data state2 "/root" (barr 2) ZooDefs$Ids/OPEN_ACL_UNSAFE)
-      (is (= {:type Watcher$Event$EventType/NodeDataChanged :path "/root"} (read-and-reset! state2-last-cb)))
+      (is (= {:type :node-data-changed :path "/root"} (read-and-reset! state2-last-cb)))
       (is (= nil @state1-last-cb))
 
       (.set-data state2 "/root" (barr 3) ZooDefs$Ids/OPEN_ACL_UNSAFE)
@@ -146,34 +136,34 @@
       (.get-data state2 "/root" true)
       (.get-data state2 "/root" false)
       (.delete-node state1 "/root")
-      (is (= {:type Watcher$Event$EventType/NodeDeleted :path "/root"} (read-and-reset! state2-last-cb)))
+      (is (= {:type :node-deleted :path "/root"} (read-and-reset! state2-last-cb)))
       (.get-data state2 "/root" true)
       (.set-ephemeral-node state1 "/root" (barr 1 2 3 4) ZooDefs$Ids/OPEN_ACL_UNSAFE)
-      (is (= {:type Watcher$Event$EventType/NodeCreated :path "/root"} (read-and-reset! state2-last-cb)))
+      (is (= {:type :node-created :path "/root"} (read-and-reset! state2-last-cb)))
 
       (.get-children state1 "/" true)
       (.set-data state2 "/a" (barr 9) ZooDefs$Ids/OPEN_ACL_UNSAFE)
       (is (= nil @state2-last-cb))
-      (is (= {:type Watcher$Event$EventType/NodeChildrenChanged :path "/"} (read-and-reset! state1-last-cb)))
+      (is (= {:type :node-children-changed :path "/"} (read-and-reset! state1-last-cb)))
 
       (.get-data state2 "/root" true)
       (.set-ephemeral-node state1 "/root" (barr 1 2) ZooDefs$Ids/OPEN_ACL_UNSAFE)
-      (is (= {:type Watcher$Event$EventType/NodeDataChanged :path "/root"} (read-and-reset! state2-last-cb)))
+      (is (= {:type :node-data-changed :path "/root"} (read-and-reset! state2-last-cb)))
 
       (.mkdirs state1 "/ccc" ZooDefs$Ids/OPEN_ACL_UNSAFE)
       (.get-children state1 "/ccc" true)
       (.get-data state2 "/ccc/b" true)
       (.set-data state2 "/ccc/b" (barr 8) ZooDefs$Ids/OPEN_ACL_UNSAFE)
-      (is (= {:type Watcher$Event$EventType/NodeCreated :path "/ccc/b"} (read-and-reset! state2-last-cb)))
-      (is (= {:type Watcher$Event$EventType/NodeChildrenChanged :path "/ccc"} (read-and-reset! state1-last-cb)))
+      (is (= {:type :node-created :path "/ccc/b"} (read-and-reset! state2-last-cb)))
+      (is (= {:type :node-children-changed :path "/ccc"} (read-and-reset! state1-last-cb)))
 
       (.get-data state2 "/root" true)
       (.get-data state2 "/root2" true)
       (.close state1)
 
-      (is (= {:type Watcher$Event$EventType/NodeDeleted :path "/root"} (read-and-reset! state2-last-cb)))
+      (is (= {:type :node-deleted :path "/root"} (read-and-reset! state2-last-cb)))
       (.set-data state2 "/root2" (barr 9) ZooDefs$Ids/OPEN_ACL_UNSAFE)
-      (is (= {:type Watcher$Event$EventType/NodeCreated :path "/root2"} (read-and-reset! state2-last-cb)))
+      (is (= {:type :node-created :path "/root2"} (read-and-reset! state2-last-cb)))
       (.close state2)
       )))
 
@@ -185,53 +175,53 @@
           assignment2 (Assignment. "/aaa" {} {[2] ["2" 2002]} {} {})
           nimbusInfo1 (NimbusInfo. "nimbus1" 6667 false)
           nimbusInfo2 (NimbusInfo. "nimbus2" 6667 false)
-          nimbusSummary1 (NimbusSummary. "nimbus1" 6667 (Time/currentTimeSecs) false "v1")
-          nimbusSummary2 (NimbusSummary. "nimbus2" 6667 (Time/currentTimeSecs) false "v2")
+          nimbusSummary1 (NimbusSummary. "nimbus1" 6667 (current-time-secs) false "v1")
+          nimbusSummary2 (NimbusSummary. "nimbus2" 6667 (current-time-secs) false "v2")
           base1 (StormBase. "/tmp/storm1" 1 {:type :active} 2 {} "" nil nil {})
           base2 (StormBase. "/tmp/storm2" 2 {:type :active} 2 {} "" nil nil {})]
       (is (= [] (.assignments state nil)))
-      (.setAssignment state "storm1" (thriftify-assignment assignment1))
-      (is (= assignment1 (clojurify-assignment (.assignmentInfo state "storm1" nil))))
-      (is (= nil (clojurify-assignment (.assignmentInfo state "storm3" nil))))
-      (.setAssignment state "storm1" (thriftify-assignment assignment2))
-      (.setAssignment state "storm3" (thriftify-assignment assignment1))
+      (.set-assignment! state "storm1" assignment1)
+      (is (= assignment1 (.assignment-info state "storm1" nil)))
+      (is (= nil (.assignment-info state "storm3" nil)))
+      (.set-assignment! state "storm1" assignment2)
+      (.set-assignment! state "storm3" assignment1)
       (is (= #{"storm1" "storm3"} (set (.assignments state nil))))
-      (is (= assignment2 (clojurify-assignment (.assignmentInfo state "storm1" nil))))
-      (is (= assignment1 (clojurify-assignment (.assignmentInfo state "storm3" nil))))
+      (is (= assignment2 (.assignment-info state "storm1" nil)))
+      (is (= assignment1 (.assignment-info state "storm3" nil)))
+      
+      (is (= [] (.active-storms state)))
+      (.activate-storm! state "storm1" base1)
+      (is (= ["storm1"] (.active-storms state)))
+      (is (= base1 (.storm-base state "storm1" nil)))
+      (is (= nil (.storm-base state "storm2" nil)))
+      (.activate-storm! state "storm2" base2)
+      (is (= base1 (.storm-base state "storm1" nil)))
+      (is (= base2 (.storm-base state "storm2" nil)))
+      (is (= #{"storm1" "storm2"} (set (.active-storms state))))
+      (.remove-storm-base! state "storm1")
+      (is (= base2 (.storm-base state "storm2" nil)))
+      (is (= #{"storm2"} (set (.active-storms state))))
 
-      (is (= [] (.activeStorms state)))
-      (.activateStorm state "storm1" (thriftify-storm-base base1))
-      (is (= ["storm1"] (.activeStorms state)))
-      (is (= base1 (clojurify-storm-base (.stormBase state "storm1" nil))))
-      (is (= nil (clojurify-storm-base (.stormBase state "storm2" nil))))
-      (.activateStorm state "storm2" (thriftify-storm-base base2))
-      (is (= base1 (clojurify-storm-base (.stormBase state "storm1" nil))))
-      (is (= base2 (clojurify-storm-base (.stormBase state "storm2" nil))))
-      (is (= #{"storm1" "storm2"} (set (.activeStorms state))))
-      (.removeStormBase state "storm1")
-      (is (= base2 (clojurify-storm-base (.stormBase state "storm2" nil))))
-      (is (= #{"storm2"} (set (.activeStorms state))))
+      (is (nil? (.credentials state "storm1" nil)))
+      (.set-credentials! state "storm1" {"a" "a"} {})
+      (is (= {"a" "a"} (.credentials state "storm1" nil)))
+      (.set-credentials! state "storm1" {"b" "b"} {})
+      (is (= {"b" "b"} (.credentials state "storm1" nil)))
 
-      (is (nil? (clojurify-crdentials (.credentials state "storm1" nil))))
-      (.setCredentials state "storm1" (thriftify-credentials {"a" "a"}) {})
-      (is (= {"a" "a"} (clojurify-crdentials (.credentials state "storm1" nil))))
-      (.setCredentials state "storm1" (thriftify-credentials {"b" "b"}) {})
-      (is (= {"b" "b"} (clojurify-crdentials (.credentials state "storm1" nil))))
-
-      (is (= [] (.blobstoreInfo state "")))
-      (.setupBlobstore state "key1" nimbusInfo1 (Integer/parseInt "1"))
-      (is (= ["key1"] (.blobstoreInfo state "")))
-      (is (= [(str (.toHostPortString nimbusInfo1) "-1")] (.blobstoreInfo state "key1")))
-      (.setupBlobstore state "key1" nimbusInfo2 (Integer/parseInt "1"))
+      (is (= [] (.blobstore-info state nil)))
+      (.setup-blobstore! state "key1" nimbusInfo1 "1")
+      (is (= ["key1"] (.blobstore-info state nil)))
+      (is (= [(str (.toHostPortString nimbusInfo1) "-1")] (.blobstore-info state "key1")))
+      (.setup-blobstore! state "key1" nimbusInfo2 "1")
       (is (= #{(str (.toHostPortString nimbusInfo1) "-1")
-               (str (.toHostPortString nimbusInfo2) "-1")} (set (.blobstoreInfo state "key1"))))
-      (.removeBlobstoreKey state "key1")
-      (is (= [] (.blobstoreInfo state "")))
+               (str (.toHostPortString nimbusInfo2) "-1")} (set (.blobstore-info state "key1"))))
+      (.remove-blobstore-key! state "key1")
+      (is (= [] (.blobstore-info state nil)))
 
       (is (= [] (.nimbuses state)))
-      (.addNimbusHost state "nimbus1:port" nimbusSummary1)
+      (.add-nimbus-host! state "nimbus1:port" nimbusSummary1)
       (is (= [nimbusSummary1] (.nimbuses state)))
-      (.addNimbusHost state "nimbus2:port" nimbusSummary2)
+      (.add-nimbus-host! state "nimbus2:port" nimbusSummary2)
       (is (= #{nimbusSummary1 nimbusSummary2} (set (.nimbuses state))))
 
       ;; TODO add tests for task info and task heartbeat setting and getting
@@ -239,40 +229,35 @@
       )))
 
 (defn- validate-errors! [state storm-id component errors-list]
-  (let [errors (map clojurify-error (.errors state storm-id component))]
+  (let [errors (.errors state storm-id component)]
+    ;;(println errors)
     (is (= (count errors) (count errors-list)))
     (doseq [[error target] (map vector errors errors-list)]
-      (when-not (.contains (:error error) target)
+      (when-not  (.contains (:error error) target)
         (println target " => " (:error error)))
       (is (.contains (:error error) target))
       )))
 
-(defn- stringify-error [error]
-  (let [result (java.io.StringWriter.)
-        printer (java.io.PrintWriter. result)]
-    (.printStackTrace error printer)
-    (.toString result)))
 
 (deftest test-storm-cluster-state-errors
   (with-inprocess-zookeeper zk-port
     (with-simulated-time
       (let [state (mk-storm-state zk-port)]
-        (.reportError state "a" "1" (Utils/localHostname) 6700  (RuntimeException.))
+        (.report-error state "a" "1" (local-hostname) 6700 (RuntimeException.))
         (validate-errors! state "a" "1" ["RuntimeException"])
         (advance-time-secs! 1)
-        (.reportError state "a" "1" (Utils/localHostname) 6700 (IllegalArgumentException.))
+        (.report-error state "a" "1" (local-hostname) 6700 (IllegalArgumentException.))
         (validate-errors! state "a" "1" ["IllegalArgumentException" "RuntimeException"])
         (doseq [i (range 10)]
-          (.reportError state "a" "2" (Utils/localHostname) 6700 (RuntimeException.))
+          (.report-error state "a" "2" (local-hostname) 6700 (RuntimeException.))
           (advance-time-secs! 2))
         (validate-errors! state "a" "2" (repeat 10 "RuntimeException"))
         (doseq [i (range 5)]
-          (.reportError state "a" "2" (Utils/localHostname) 6700 (IllegalArgumentException.))
+          (.report-error state "a" "2" (local-hostname) 6700 (IllegalArgumentException.))
           (advance-time-secs! 2))
         (validate-errors! state "a" "2" (concat (repeat 5 "IllegalArgumentException")
-                                          (repeat 5 "RuntimeException")
-                                          ))
-
+                                                (repeat 5 "RuntimeException")
+                                                ))
         (.disconnect state)
         ))))
 
@@ -284,10 +269,10 @@
           supervisor-info1 (SupervisorInfo. 10 "hostname-1" "id1" [1 2] [] {} 1000 "0.9.2" nil)
           supervisor-info2 (SupervisorInfo. 10 "hostname-2" "id2" [1 2] [] {} 1000 "0.9.2" nil)]
       (is (= [] (.supervisors state1 nil)))
-      (.supervisorHeartbeat state2 "2" (thriftify-supervisor-info supervisor-info2))
-      (.supervisorHeartbeat state1 "1" (thriftify-supervisor-info supervisor-info1))
-      (is (= supervisor-info2 (clojurify-supervisor-info (.supervisorInfo state1 "2"))))
-      (is (= supervisor-info1 (clojurify-supervisor-info (.supervisorInfo state1 "1"))))
+      (.supervisor-heartbeat! state2 "2" supervisor-info2)
+      (.supervisor-heartbeat! state1 "1" supervisor-info1)
+      (is (= supervisor-info2 (.supervisor-info state1 "2")))
+      (is (= supervisor-info1 (.supervisor-info state1 "1")))
       (is (= #{"1" "2"} (set (.supervisors state1 nil))))
       (is (= #{"1" "2"} (set (.supervisors state2 nil))))
       (.disconnect state2)
@@ -299,23 +284,23 @@
   (with-inprocess-zookeeper zk-port
     (let [builder (Mockito/mock CuratorFrameworkFactory$Builder)
           conf (merge
-                 (mk-config zk-port)
-                 {STORM-ZOOKEEPER-CONNECTION-TIMEOUT 10
-                  STORM-ZOOKEEPER-SESSION-TIMEOUT 10
-                  STORM-ZOOKEEPER-RETRY-INTERVAL 5
-                  STORM-ZOOKEEPER-RETRY-TIMES 2
-                  STORM-ZOOKEEPER-RETRY-INTERVAL-CEILING 15
-                  STORM-ZOOKEEPER-AUTH-SCHEME "digest"
-                  STORM-ZOOKEEPER-AUTH-PAYLOAD "storm:thisisapoorpassword"})]
+                (mk-config zk-port)
+                {STORM-ZOOKEEPER-CONNECTION-TIMEOUT 10
+                 STORM-ZOOKEEPER-SESSION-TIMEOUT 10
+                 STORM-ZOOKEEPER-RETRY-INTERVAL 5
+                 STORM-ZOOKEEPER-RETRY-TIMES 2
+                 STORM-ZOOKEEPER-RETRY-INTERVAL-CEILING 15
+                 STORM-ZOOKEEPER-AUTH-SCHEME "digest"
+                 STORM-ZOOKEEPER-AUTH-PAYLOAD "storm:thisisapoorpassword"})]
       (. (Mockito/when (.connectString builder (Mockito/anyString))) (thenReturn builder))
       (. (Mockito/when (.connectionTimeoutMs builder (Mockito/anyInt))) (thenReturn builder))
       (. (Mockito/when (.sessionTimeoutMs builder (Mockito/anyInt))) (thenReturn builder))
-      (Utils/testSetupBuilder builder (str zk-port "/") conf (ZookeeperAuthInfo. conf))
+      (TestUtils/testSetupBuilder builder (str zk-port "/") conf (ZookeeperAuthInfo. conf))
       (is (nil?
-            (try
-              (. (Mockito/verify builder) (authorization "digest" (.getBytes (conf STORM-ZOOKEEPER-AUTH-PAYLOAD))))
-              (catch MockitoAssertionError e
-                e)))))))
+           (try
+             (. (Mockito/verify builder) (authorization "digest" (.getBytes (conf STORM-ZOOKEEPER-AUTH-PAYLOAD))))
+             (catch MockitoAssertionError e
+               e)))))))
 
 (deftest test-storm-state-callbacks
   ;; TODO finish
@@ -323,17 +308,14 @@
 
 (deftest test-cluster-state-default-acls
   (testing "The default ACLs are empty."
-    (let [zk-mock (Mockito/mock Zookeeper)
-          curator-frameworke (reify CuratorFramework (^void close [this] nil))]
-      ;; No need for when clauses because we just want to return nil
-      (with-open [_ (MockedZookeeper. zk-mock)]
-        (. (Mockito/when (.mkClientImpl zk-mock (Mockito/anyMap) (Mockito/anyList) (Mockito/any) (Mockito/anyString) (Mockito/any) (Mockito/anyMap))) (thenReturn curator-frameworke))
-        (ClusterUtils/mkStateStorage {} nil nil (ClusterStateContext.))
-        (.mkdirsImpl (Mockito/verify zk-mock (Mockito/times 1)) (Mockito/any) (Mockito/anyString) (Mockito/eq nil))))
-    (let [distributed-state-storage (reify IStateStorage
-                                      (register [this callback] nil)
-                                      (mkdirs [this path acls] nil))
-          cluster-utils (Mockito/mock ClusterUtils)]
-      (with-open [mocked-cluster (MockedCluster. cluster-utils)]
-        (. (Mockito/when (.mkStateStorageImpl cluster-utils (Mockito/any) (Mockito/any) (Mockito/eq nil) (Mockito/any))) (thenReturn distributed-state-storage))
-        (ClusterUtils/mkStormClusterState {} nil (ClusterStateContext.))))))
+    (stubbing [zk/mkdirs nil
+               zk/mk-client (reify CuratorFramework (^void close [this] nil))]
+      (mk-distributed-cluster-state {})
+      (verify-call-times-for zk/mkdirs 1)
+      (verify-first-call-args-for-indices zk/mkdirs [2] nil))
+    (stubbing [mk-distributed-cluster-state (reify ClusterState
+                                              (register [this callback] nil)
+                                              (mkdirs [this path acls] nil))]
+      (mk-storm-cluster-state {})
+      (verify-call-times-for mk-distributed-cluster-state 1)
+      (verify-first-call-args-for-indices mk-distributed-cluster-state [4] nil))))

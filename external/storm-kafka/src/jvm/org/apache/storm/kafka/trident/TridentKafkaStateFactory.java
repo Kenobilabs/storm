@@ -17,16 +17,18 @@
  */
 package org.apache.storm.kafka.trident;
 
-import org.apache.storm.task.IMetricsContext;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.apache.storm.kafka.trident.mapper.TridentTupleToKafkaMapper;
-import org.apache.storm.kafka.trident.selector.KafkaTopicSelector;
-import org.apache.storm.trident.state.State;
-import org.apache.storm.trident.state.StateFactory;
-
 import java.util.Map;
 import java.util.Properties;
+
+import org.apache.storm.kafka.trident.mapper.TridentTupleToKafkaMapper;
+import org.apache.storm.kafka.trident.selector.KafkaTopicSelector;
+import org.apache.storm.task.IMetricsContext;
+import org.apache.storm.task.TopologyContext;
+import org.apache.storm.trident.state.State;
+import org.apache.storm.trident.state.StateFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.symantec.KAFKACONSTANTS;
 
 public class TridentKafkaStateFactory implements StateFactory {
 
@@ -35,7 +37,8 @@ public class TridentKafkaStateFactory implements StateFactory {
     private TridentTupleToKafkaMapper mapper;
     private KafkaTopicSelector topicSelector;
     private Properties producerProperties = new Properties();
-
+    private String name;
+    
     public TridentKafkaStateFactory withTridentTupleToKafkaMapper(TridentTupleToKafkaMapper mapper) {
         this.mapper = mapper;
         return this;
@@ -57,6 +60,13 @@ public class TridentKafkaStateFactory implements StateFactory {
         TridentKafkaState state = new TridentKafkaState()
                 .withKafkaTopicSelector(this.topicSelector)
                 .withTridentTupleToKafkaMapper(this.mapper);
+        TopologyContext context = (TopologyContext) metrics;
+        this.name = "KafkaBolt";
+        if (conf != null && conf.containsKey(KAFKACONSTANTS.STATSD)
+            && "YES".compareToIgnoreCase(conf.get(KAFKACONSTANTS.STATSD).toString()) == 0) {
+          context.setTaskData(KAFKACONSTANTS.STATSD, this.name);
+          state.withStatsD(conf, context);
+        }
         state.prepare(producerProperties);
         return state;
     }

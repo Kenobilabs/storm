@@ -17,8 +17,6 @@
  */
 package org.apache.storm;
 
-import org.apache.storm.container.ResourceIsolationInterface;
-import org.apache.storm.daemon.supervisor.workermanager.IWorkerManager;
 import org.apache.storm.scheduler.resource.strategies.eviction.IEvictionStrategy;
 import org.apache.storm.scheduler.resource.strategies.priority.ISchedulingPriorityStrategy;
 import org.apache.storm.scheduler.resource.strategies.scheduling.IStrategy;
@@ -233,7 +231,7 @@ public class Config extends HashMap<String, Object> {
 
     /**
      * Whether we want to display all the resource capacity and scheduled usage on the UI page.
-     * You MUST have this variable set if you are using any kind of resource-related scheduler.
+     * We suggest to have this variable set if you are using any kind of resource-related scheduler.
      *
      * If this is not set, we will not display resource capacity and usage on the UI.
      */
@@ -486,6 +484,13 @@ public class Config extends HashMap<String, Object> {
     public static final String NIMBUS_THRIFT_TRANSPORT_PLUGIN = "nimbus.thrift.transport";
 
     /**
+     * How long before a Thrift Client socket hangs before timeout
+     * and restart the socket.
+     */
+    @isInteger
+    public static final String STORM_THRIFT_SOCKET_TIMEOUT_MS = "storm.thrift.socket.timeout.ms";
+
+    /**
      * The host that the master server is running on, added only for backward compatibility,
      * the usage deprecated in favor of nimbus.seeds config.
      */
@@ -552,7 +557,9 @@ public class Config extends HashMap<String, Object> {
 
     /**
      * The maximum buffer size thrift should use when reading messages.
+     * @deprecated  As SimpleTrasportPlugin is deprecated, no other thrift transport plugin uses this configuration.
      */
+    @Deprecated
     @isInteger
     @isPositiveNumber
     public static final String NIMBUS_THRIFT_MAX_BUFFER_SIZE = "nimbus.thrift.max_buffer_size";
@@ -926,8 +933,22 @@ public class Config extends HashMap<String, Object> {
     public static final String UI_HTTPS_NEED_CLIENT_AUTH = "ui.https.need.client.auth";
 
     /**
-     * The host that Pacemaker is running on.
+     * Value of X-FRAME-OPTIONS HTTP Header option used by Storm UI.
      */
+    @isString
+    public static final String UI_HTTP_X_FRAME_OPTIONS = "ui.http.x-frame-options";
+
+    /**
+     * The hosts that Pacemaker is running on.
+     */
+    @isStringList
+    public static final String PACEMAKER_SERVERS = "pacemaker.servers";
+
+    /**
+     * The host that Pacemaker is running on.
+     * @deprecated in favor of PACEMAKER_SERVERS for Pacemaker-HA.
+     */
+    @Deprecated
     @isString
     public static final String PACEMAKER_HOST = "pacemaker.host";
 
@@ -941,7 +962,7 @@ public class Config extends HashMap<String, Object> {
 
     /**
      * The maximum number of threads that should be used by the Pacemaker.
-     * When Pacemaker gets loaded it will spawn new threads, up to 
+     * When Pacemaker gets loaded it will spawn new threads, up to
      * this many total, to handle the load.
      */
     @isNumber
@@ -965,7 +986,7 @@ public class Config extends HashMap<String, Object> {
      */
     @CustomValidator(validatorClass=PacemakerAuthTypeValidator.class)
     public static final String PACEMAKER_AUTH_METHOD = "pacemaker.auth.method";
-    
+
     /**
      * List of DRPC servers so that the DRPCSpout knows who to talk to.
      */
@@ -1091,7 +1112,9 @@ public class Config extends HashMap<String, Object> {
 
     /**
      * The maximum buffer size thrift should use when reading messages for DRPC.
+     * @deprecated  As SimpleTrasportPlugin is deprecated, no other thrift transport plugin uses this configuration.
      */
+    @Deprecated
     @isNumber
     @isPositiveNumber
     public static final String DRPC_MAX_BUFFER_SIZE = "drpc.max_buffer_size";
@@ -1155,7 +1178,7 @@ public class Config extends HashMap<String, Object> {
     /**
      * the metadata configured on the supervisor
      */
-    @isType(type=Map.class)
+    @isMapEntryType(keyType = String.class, valueType = String.class)
     public static final String SUPERVISOR_SCHEDULER_META = "supervisor.scheduler.meta";
 
     /**
@@ -1257,6 +1280,13 @@ public class Config extends HashMap<String, Object> {
     @isPositiveNumber
     @isInteger
     public static final String STORM_BLOBSTORE_REPLICATION_FACTOR = "storm.blobstore.replication.factor";
+
+    /**
+     *  For secure mode we would want to turn on this config
+     *  By default this is turned off assuming the default is insecure
+     */
+    @isBoolean
+    public static final String STORM_BLOBSTORE_ACL_VALIDATION_ENABLED = "storm.blobstore.acl.validation.enabled";
 
     /**
      * What blobstore implementation nimbus should use.
@@ -1398,6 +1428,15 @@ public class Config extends HashMap<String, Object> {
     public static final String SUPERVISOR_CPU_CAPACITY = "supervisor.cpu.capacity";
 
     /**
+     * On some systems (windows for example) symlinks require special privileges that not everyone wants to
+     * grant a headless user.  You can completely disable the use of symlinks by setting this config to true, but
+     * by doing so you may also lose some features from storm.  For example the blobstore feature
+     * does not currently work without symlinks enabled.
+     */
+    @isBoolean
+    public static final String DISABLE_SYMLINKS = "storm.disable.symlinks";
+
+    /**
      * The jvm opts provided to workers launched by this supervisor.
      * All "%ID%", "%WORKER-ID%", "%TOPOLOGY-ID%",
      * "%WORKER-PORT%" and "%HEAP-MEM%" substrings are replaced with:
@@ -1412,7 +1451,7 @@ public class Config extends HashMap<String, Object> {
 
     /**
      * The default heap memory size in MB per worker, used in the jvm -Xmx opts for launching the worker
-      */
+     */
     @isInteger
     @isPositiveNumber
     public static final String WORKER_HEAP_MEMORY_MB = "worker.heap.memory.mb";
@@ -1490,6 +1529,13 @@ public class Config extends HashMap<String, Object> {
     public static final String TASK_CREDENTIALS_POLL_SECS = "task.credentials.poll.secs";
 
     /**
+     * How often to poll for changed topology backpressure flag from ZK
+     */
+    @isInteger
+    @isPositiveNumber
+    public static final String TASK_BACKPRESSURE_POLL_SECS = "task.backpressure.poll.secs";
+
+    /**
      * Whether to enable backpressure in for a certain topology
      */
     @isBoolean
@@ -1511,6 +1557,22 @@ public class Config extends HashMap<String, Object> {
      */
     @isPositiveNumber
     public static final String BACKPRESSURE_DISRUPTOR_LOW_WATERMARK="backpressure.disruptor.low.watermark";
+
+    /**
+     * A list of classes implementing IClusterMetricsConsumer (See storm.yaml.example for exact config format).
+     * Each listed class will be routed cluster related metrics data.
+     * Each listed class maps 1:1 to a ClusterMetricsConsumerExecutor and they're executed in Nimbus.
+     * Only consumers which run in leader Nimbus receives metrics data.
+     */
+    @isListEntryCustom(entryValidatorClasses={ClusterMetricRegistryValidator.class})
+    public static final String STORM_CLUSTER_METRICS_CONSUMER_REGISTER = "storm.cluster.metrics.consumer.register";
+
+    /**
+     * How often cluster metrics data is published to metrics consumer.
+     */
+    @NotNull
+    @isPositiveNumber
+    public static final String STORM_CLUSTER_METRICS_CONSUMER_PUBLISH_INTERVAL_SECS = "storm.cluster.metrics.consumer.publish.interval.secs";
 
     /**
      * A list of users that are allowed to interact with the topology.  To use this set
@@ -1707,7 +1769,6 @@ public class Config extends HashMap<String, Object> {
      * Each listed class will be routed all the metrics data generated by the storm metrics API.
      * Each listed class maps 1:1 to a system bolt named __metrics_ClassName#N, and it's parallelism is configurable.
      */
-
     @isListEntryCustom(entryValidatorClasses={MetricRegistryValidator.class})
     public static final String TOPOLOGY_METRICS_CONSUMER_REGISTER = "topology.metrics.consumer.register";
 
@@ -1857,18 +1918,18 @@ public class Config extends HashMap<String, Object> {
     @isPositiveNumber
     public static final String TOPOLOGY_BOLTS_SLIDING_INTERVAL_DURATION_MS = "topology.bolts.window.sliding.interval.duration.ms";
 
-    /*
-     * Bolt-specific configuration for windowed bolts to specify the name of the field in the tuple that holds
-     * the timestamp (e.g. the ts when the tuple was actually generated). If this config is specified and the
-     * field is not present in the incoming tuple, a java.lang.IllegalArgumentException will be thrown.
+    /**
+     * Bolt-specific configuration for windowed bolts to specify the name of the stream on which late tuples are
+     * going to be emitted. This configuration should only be used from the BaseWindowedBolt.withLateTupleStream builder
+     * method, and not as global parameter, otherwise IllegalArgumentException is going to be thrown.
      */
     @isString
-    public static final String TOPOLOGY_BOLTS_TUPLE_TIMESTAMP_FIELD_NAME = "topology.bolts.tuple.timestamp.field.name";
+    public static final String TOPOLOGY_BOLTS_LATE_TUPLE_STREAM = "topology.bolts.late.tuple.stream";
 
-    /*
+    /**
      * Bolt-specific configuration for windowed bolts to specify the maximum time lag of the tuple timestamp
      * in milliseconds. It means that the tuple timestamps cannot be out of order by more than this amount.
-     * This config will be effective only if the TOPOLOGY_BOLTS_TUPLE_TIMESTAMP_FIELD_NAME is also specified.
+     * This config will be effective only if {@link org.apache.storm.windowing.TimestampExtractor} is specified.
      */
     @isInteger
     @isPositiveNumber
@@ -1877,7 +1938,7 @@ public class Config extends HashMap<String, Object> {
     /*
      * Bolt-specific configuration for windowed bolts to specify the time interval for generating
      * watermark events. Watermark event tracks the progress of time when tuple timestamp is used.
-     * This config is effective only if TOPOLOGY_BOLTS_TUPLE_TIMESTAMP_FIELD_NAME is also specified.
+     * This config is effective only if {@link org.apache.storm.windowing.TimestampExtractor} is specified.
      */
     @isInteger
     @isPositiveNumber
@@ -1933,11 +1994,11 @@ public class Config extends HashMap<String, Object> {
     @isInteger
     public static final String TOPOLOGY_TICK_TUPLE_FREQ_SECS="topology.tick.tuple.freq.secs";
 
-   /**
-    * @deprecated this is no longer supported
-    * Configure the wait strategy used for internal queuing. Can be used to tradeoff latency
-    * vs. throughput
-    */
+    /**
+     * @deprecated this is no longer supported
+     * Configure the wait strategy used for internal queuing. Can be used to tradeoff latency
+     * vs. throughput
+     */
     @Deprecated
     @isString
     public static final String TOPOLOGY_DISRUPTOR_WAIT_STRATEGY="topology.disruptor.wait.strategy";
@@ -2213,78 +2274,16 @@ public class Config extends HashMap<String, Object> {
     @isString
     public static final Object CLIENT_JAR_TRANSFORMER = "client.jartransformer.class";
 
-
     /**
-     * The plugin to be used for resource isolation
+     * This is a config that is not likely to be used.  Internally the disruptor queue will batch entries written
+     * into the queue.  A background thread pool will flush those batches if they get too old.  By default that
+     * pool can grow rather large, and sacrifice some CPU time to keep the latency low.  In some cases you may
+     * want the queue to be smaller so there is less CPU used, but the latency will increase in some situations.
+     * This configs is on a per cluster bases, if you want to control this on a per topology bases you need to set
+     * the java System property for the worker "num_flusher_pool_threads" to the value you want.
      */
-    @isImplementationOfClass(implementsClass = ResourceIsolationInterface.class)
-    public static final Object STORM_RESOURCE_ISOLATION_PLUGIN = "storm.resource.isolation.plugin";
-
-    /**
-     * The plugin to be used for manager worker
-     */
-    @isImplementationOfClass(implementsClass = IWorkerManager.class)
-    public static final Object STORM_SUPERVISOR_WORKER_MANAGER_PLUGIN = "storm.supervisor.worker.manager.plugin";
-
-    /**
-     * CGroup Setting below
-     */
-
-    /**
-     * root directory of the storm cgroup hierarchy
-     */
-    @isString
-    public static final Object STORM_CGROUP_HIERARCHY_DIR = "storm.cgroup.hierarchy.dir";
-
-    /**
-     * resources to to be controlled by cgroups
-     */
-    @isStringList
-    public static final Object STORM_CGROUP_RESOURCES = "storm.cgroup.resources";
-
-    /**
-     * name for the cgroup hierarchy
-     */
-    @isString
-    public static final Object STORM_CGROUP_HIERARCHY_NAME = "storm.cgroup.hierarchy.name";
-
-    /**
-     * flag to determine whether to use a resource isolation plugin
-     * Also determines whether the unit tests for cgroup runs.
-     * If storm.resource.isolation.plugin.enable is set to false the unit tests for cgroups will not run
-     */
-    @isBoolean
-    public static final String STORM_RESOURCE_ISOLATION_PLUGIN_ENABLE = "storm.resource.isolation.plugin.enable";
-
-    /**
-     * root directory for cgoups
-     */
-    @isString
-    public static String STORM_SUPERVISOR_CGROUP_ROOTDIR = "storm.supervisor.cgroup.rootdir";
-
-    /**
-     * the manually set memory limit (in MB) for each CGroup on supervisor node
-     */
-    @isPositiveNumber
-    public static String STORM_WORKER_CGROUP_MEMORY_MB_LIMIT = "storm.worker.cgroup.memory.mb.limit";
-
-    /**
-     * the manually set cpu share for each CGroup on supervisor node
-     */
-    @isPositiveNumber
-    public static String STORM_WORKER_CGROUP_CPU_LIMIT = "storm.worker.cgroup.cpu.limit";
-
-    /**
-     * full path to cgexec command
-     */
-    @isString
-    public static String STORM_CGROUP_CGEXEC_CMD = "storm.cgroup.cgexec.cmd";
-
-    /**
-     * The amount of memory a worker can exceed its allocation before cgroup will kill it
-     */
-    @isPositiveNumber
-    public static String STORM_CGROUP_MEMORY_LIMIT_TOLERANCE_MARGIN_MB = "storm.cgroup.memory.limit.tolerance.margin.mb";
+    @isInteger
+    public static final String STORM_WORKER_DISRUPTOR_FLUSHER_MAX_POOL_SIZE = "storm.worker.disruptor.flusher.max.pool.size";
 
     public static void setClasspath(Map conf, String cp) {
         conf.put(Config.TOPOLOGY_CLASSPATH, cp);
@@ -2497,25 +2496,5 @@ public class Config extends HashMap<String, Object> {
         if (clazz != null) {
             this.put(Config.TOPOLOGY_SCHEDULER_STRATEGY, clazz.getName());
         }
-    }
-
-    public static String getCgroupRootDir(Map conf) {
-        return (String) conf.get(STORM_SUPERVISOR_CGROUP_ROOTDIR);
-    }
-
-    public static String getCgroupStormHierarchyDir(Map conf) {
-        return (String) conf.get(Config.STORM_CGROUP_HIERARCHY_DIR);
-    }
-
-    public static ArrayList<String> getCgroupStormResources(Map conf) {
-        ArrayList<String> ret = new ArrayList<String>();
-        for (String entry : ((Iterable<String>) conf.get(Config.STORM_CGROUP_RESOURCES))) {
-            ret.add(entry);
-        }
-        return ret;
-    }
-
-    public static String getCgroupStormHierarchyName(Map conf) {
-        return (String) conf.get(Config.STORM_CGROUP_HIERARCHY_NAME);
     }
 }

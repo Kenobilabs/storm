@@ -20,7 +20,6 @@ package org.apache.storm.starter.tools;
 import java.io.Serializable;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 
@@ -105,11 +104,14 @@ public final class SlotBasedCounter<T> implements Serializable {
    * Remove any object from the counter whose total count is zero (to free up memory).
    */
   public void wipeZeros() {
-    for(Iterator<Map.Entry<T, long[]>> it = objToCounts.entrySet().iterator(); it.hasNext(); ) {
-      Map.Entry<T, long[]> entry = it.next();
-      if (shouldBeRemovedFromCounter(entry.getKey())) {
-        it.remove();
+    Set<T> objToBeRemoved = new HashSet<T>();
+    for (T obj : objToCounts.keySet()) {
+      if (shouldBeRemovedFromCounter(obj)) {
+        objToBeRemoved.add(obj);
       }
+    }
+    for (T obj : objToBeRemoved) {
+      objToCounts.remove(obj);
     }
   }
 

@@ -1,4 +1,3 @@
-
 ;; Licensed to the Apache Software Foundation (ASF) under one
 ;; or more contributor license agreements.  See the NOTICE file
 ;; distributed with this work for additional information
@@ -16,11 +15,10 @@
 ;; limitations under the License.
 (ns org.apache.storm.messaging.netty-integration-test
   (:use [clojure test])
-  (:import [org.apache.storm.messaging TransportFactory]
-           [org.apache.storm Thrift])
+  (:import [org.apache.storm.messaging TransportFactory])
   (:import [org.apache.storm.testing TestWordSpout TestGlobalCount])
-  (:import [org.apache.storm.utils Utils])
-  (:use [org.apache.storm testing util config]))
+  (:use [org.apache.storm testing util config])
+  (:require [org.apache.storm [thrift :as thrift]]))
 
 (deftest test-integration
   (with-simulated-time-local-cluster [cluster :supervisors 4 :supervisor-slot-port-min 6710
@@ -33,13 +31,10 @@
                                                     STORM-MESSAGING-NETTY-MAX-SLEEP-MS 5000
                                                     STORM-MESSAGING-NETTY-CLIENT-WORKER-THREADS 1
                                                     STORM-MESSAGING-NETTY-SERVER-WORKER-THREADS 1}]
-    (let [topology (Thrift/buildTopology
-                     {"1" (Thrift/prepareSpoutDetails
-                            (TestWordSpout. true) (Integer. 4))}
-                     {"2" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "1" nil)
-                             (Thrift/prepareShuffleGrouping)}
-                            (TestGlobalCount.) (Integer. 6))})
+    (let [topology (thrift/mk-topology
+                     {"1" (thrift/mk-spout-spec (TestWordSpout. true) :parallelism-hint 4)}
+                     {"2" (thrift/mk-bolt-spec {"1" :shuffle} (TestGlobalCount.)
+                                               :parallelism-hint 6)})
           results (complete-topology cluster
                                      topology
                                      ;; important for test that

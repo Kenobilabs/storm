@@ -19,19 +19,8 @@
   (:import [org.apache.storm.trident.tuple TridentTupleView TridentTupleView$ProjectionFactory
             TridentTupleView$FreshOutputFactory TridentTupleView$OperationOutputFactory
             TridentTupleView$RootFactory])
-  (:use [org.apache.storm.trident testing]))
-
-(defmacro letlocals
-  [& body]
-  (let [[tobind lexpr] (split-at (dec (count body)) body)
-        binded (vec (mapcat (fn [e]
-                              (if (and (list? e) (= 'bind (first e)))
-                                [(second e) (last e)]
-                                ['_ e]
-                                ))
-                            tobind))]
-    `(let ~binded
-       ~(first lexpr))))
+  (:use [org.apache.storm.trident testing])
+  (:use [org.apache.storm util]))
 
 (deftest test-fresh
   (letlocals

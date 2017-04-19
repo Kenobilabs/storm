@@ -17,13 +17,12 @@
   (:import [java.io InputStream OutputStream]
            [org.apache.storm.generated SettableBlobMeta AccessControl AuthorizationException
             KeyNotFoundException]
-           [org.apache.storm.blobstore BlobStoreAclHandler]
-           [org.apache.storm.utils Utils])
+           [org.apache.storm.blobstore BlobStoreAclHandler])
   (:use [org.apache.storm config]
         [clojure.string :only [split]]
         [clojure.tools.cli :only [cli]]
         [clojure.java.io :only [copy input-stream output-stream]]
-        [org.apache.storm blobstore log])
+        [org.apache.storm blobstore log util])
   (:gen-class))
 
 (defn update-blob-from-stream
@@ -89,10 +88,10 @@
 (defn create-cli [args]
   (let [[{file :file acl :acl replication-factor :replication-factor} [key] _] (cli args ["-f" "--file" :default nil]
                                                   ["-a" "--acl" :default [] :parse-fn as-acl]
-                                                  ["-r" "--replication-factor" :default -1 :parse-fn #(Integer/parseInt %)])
+                                                  ["-r" "--replication-factor" :default -1 :parse-fn parse-int])
         meta (doto (SettableBlobMeta. acl)
                    (.set_replication_factor replication-factor))]
-    (Utils/validateKeyName key)
+    (validate-key-name! key)
     (log-message "Creating " key " with ACL " (pr-str (map access-control-str acl)))
     (if file
       (with-open [f (input-stream file)]
@@ -141,7 +140,7 @@
                  (log-message "Current replication factor " blob-replication)
                  blob-replication)
       "--update" (let [[{replication-factor :replication-factor} [key] _]
-                        (cli new-args ["-r" "--replication-factor" :parse-fn #(Integer/parseInt %)])]
+                        (cli new-args ["-r" "--replication-factor" :parse-fn parse-int])]
                    (if (nil? replication-factor)
                      (throw (RuntimeException. (str "Please set the replication factor")))
                      (let [blob-replication (.updateBlobReplication blobstore key replication-factor)]

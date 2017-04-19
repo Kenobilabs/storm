@@ -15,7 +15,7 @@
 ;; limitations under the License.
 
 (ns org.apache.storm.LocalCluster
-  (:use [org.apache.storm testing config])
+  (:use [org.apache.storm testing config util])
   (:import [org.apache.storm.utils Utils])
   (:import [java.util Map])
   (:gen-class
@@ -48,7 +48,7 @@
   [this name conf topology]
   (submit-local-topology
     (:nimbus (. this state)) name conf topology)
-  (let [hook (Utils/getConfiguredClass conf STORM-TOPOLOGY-SUBMISSION-NOTIFIER-PLUGIN)]
+  (let [hook (get-configured-class conf STORM-TOPOLOGY-SUBMISSION-NOTIFIER-PLUGIN)]
     (when hook (submit-hook hook name conf topology))))
 
 

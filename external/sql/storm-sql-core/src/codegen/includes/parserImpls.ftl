@@ -61,6 +61,7 @@ SqlNode SqlCreateTable() :
     SqlIdentifier tblName;
     SqlNodeList fieldList;
     SqlNode location;
+    SqlNode parallelism = null;
     SqlNode input_format_class_name = null, output_format_class_name = null;
     SqlNode tbl_properties = null;
     SqlNode select = null;
@@ -77,10 +78,36 @@ SqlNode SqlCreateTable() :
     ]
     <LOCATION>
     location = StringLiteral()
+    [ <PARALLELISM> parallelism = UnsignedNumericLiteral() ]
     [ <TBLPROPERTIES> tbl_properties = StringLiteral() ]
     [ <AS> select = OrderedQueryOrExpr(ExprContext.ACCEPT_QUERY) ] {
         return new SqlCreateTable(pos, tblName, fieldList,
         input_format_class_name, output_format_class_name, location,
-        tbl_properties, select);
+        parallelism, tbl_properties, select);
+    }
+}
+
+/**
+ * CREATE FUNCTION functionname AS 'classname'
+ */
+SqlNode SqlCreateFunction() :
+{
+    SqlParserPos pos;
+    SqlIdentifier functionName;
+    SqlNode className;
+    SqlNode jarName = null;
+}
+{
+    <CREATE> { pos = getPos(); }
+    <FUNCTION>
+        functionName = CompoundIdentifier()
+    <AS>
+        className = StringLiteral()
+    [
+      <USING> <JAR>
+      jarName = StringLiteral()
+    ]
+    {
+      return new SqlCreateFunction(pos, functionName, className, jarName);
     }
 }

@@ -14,19 +14,18 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (ns org.apache.storm.security.auth.ThriftServer-test
-  (:use [org.apache.storm util config])
+  (:use [org.apache.storm config])
   (:use [clojure test])
   (:import [org.apache.storm.security.auth ThriftServer ThriftConnectionType])
   (:import [org.apache.thrift.transport TTransportException])
-  (:import [org.apache.storm.utils Utils])
 )
 
 (deftest test-stop-checks-for-null
-  (let [server (ThriftServer. (clojurify-structure (Utils/readDefaultConfig)) nil
+  (let [server (ThriftServer. (read-default-config) nil 
                               ThriftConnectionType/DRPC)]
     (.stop server)))
 
 (deftest test-isServing-checks-for-null
-  (let [server (ThriftServer. (clojurify-structure (Utils/readDefaultConfig)) nil
+  (let [server (ThriftServer. (read-default-config) nil 
                               ThriftConnectionType/DRPC)]
     (is (not (.isServing server)))))

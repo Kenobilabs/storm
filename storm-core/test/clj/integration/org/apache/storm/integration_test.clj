@@ -15,43 +15,36 @@
 ;; limitations under the License.
 (ns integration.org.apache.storm.integration-test
   (:use [clojure test])
-  (:import [org.apache.storm Config Thrift])
+  (:import [org.apache.storm Config])
   (:import [org.apache.storm.topology TopologyBuilder])
   (:import [org.apache.storm.generated InvalidTopologyException SubmitOptions TopologyInitialStatus RebalanceOptions])
   (:import [org.apache.storm.testing TestWordCounter TestWordSpout TestGlobalCount
             TestAggregatesCounter TestConfBolt AckFailMapTracker AckTracker TestPlannerSpout])
+  (:import [org.apache.storm.task WorkerTopologyContext])
   (:import [org.apache.storm.utils Time])
   (:import [org.apache.storm.tuple Fields])
-  (:import [org.apache.storm.cluster StormClusterStateImpl])
-  (:use [org.apache.storm.internal clojure])
-  (:use [org.apache.storm testing config util])
-  (:import [org.apache.storm Thrift])
-  (:import [org.apache.storm.utils Utils]) 
-  (:import [org.apache.storm.daemon StormCommon]))
+  (:import [org.mockito Mockito])
+  (:use [org.apache.storm testing config clojure util])
+  (:use [org.apache.storm.daemon common])
+  (:require [org.apache.storm [cluster :as cluster]])
+  (:require [org.apache.storm.daemon [executor :as executor]])
+  (:require [org.apache.storm [thrift :as thrift]]))
 
 (deftest test-basic-topology
   (doseq [zmq-on? [true false]]
     (with-simulated-time-local-cluster [cluster :supervisors 4
                                         :daemon-conf {STORM-LOCAL-MODE-ZMQ zmq-on?}]
-      (let [topology (Thrift/buildTopology
-                      {"1" (Thrift/prepareSpoutDetails
-                             (TestWordSpout. true) (Integer. 3))}
-                      {"2" (Thrift/prepareBoltDetails
-                             {(Utils/getGlobalStreamId "1" nil)
-                              (Thrift/prepareFieldsGrouping ["word"])}
-                             (TestWordCounter.) (Integer. 4))
-                       "3" (Thrift/prepareBoltDetails
-                             {(Utils/getGlobalStreamId "1" nil)
-                              (Thrift/prepareGlobalGrouping)}
-                             (TestGlobalCount.))
-                       "4" (Thrift/prepareBoltDetails
-                             {(Utils/getGlobalStreamId "2" nil)
-                              (Thrift/prepareGlobalGrouping)}
-                             (TestAggregatesCounter.))})
+      (let [topology (thrift/mk-topology
+                      {"1" (thrift/mk-spout-spec (TestWordSpout. true) :parallelism-hint 3)}
+                      {"2" (thrift/mk-bolt-spec {"1" ["word"]} (TestWordCounter.) :parallelism-hint 4)
+                       "3" (thrift/mk-bolt-spec {"1" :global} (TestGlobalCount.))
+                       "4" (thrift/mk-bolt-spec {"2" :global} (TestAggregatesCounter.))
+                       })
             results (complete-topology cluster
                                        topology
                                        :mock-sources {"1" [["nathan"] ["bob"] ["joey"] ["nathan"]]}
-                                       :storm-conf {TOPOLOGY-WORKERS 2})]
+                                       :storm-conf {TOPOLOGY-WORKERS 2
+                                                    TOPOLOGY-TESTING-ALWAYS-TRY-SERIALIZE true})]
         (is (ms= [["nathan"] ["bob"] ["joey"] ["nathan"]]
                  (read-tuples results "1")))
         (is (ms= [["nathan" 1] ["nathan" 2] ["bob" 1] ["joey" 1]]
@@ -73,14 +66,12 @@
 
 (deftest test-multi-tasks-per-executor
   (with-simulated-time-local-cluster [cluster :supervisors 4]
-    (let [topology (Thrift/buildTopology
-                    {"1" (Thrift/prepareSpoutDetails (TestWordSpout. true))}
-                    {"2" (Thrift/prepareBoltDetails
-                           {(Utils/getGlobalStreamId "1" nil)
-                            (Thrift/prepareAllGrouping)}
-                           emit-task-id
-                           (Integer. 3)
-                           {TOPOLOGY-TASKS 6})})
+    (let [topology (thrift/mk-topology
+                    {"1" (thrift/mk-spout-spec (TestWordSpout. true))}
+                    {"2" (thrift/mk-bolt-spec {"1" :all} emit-task-id
+                      :parallelism-hint 3
+                      :conf {TOPOLOGY-TASKS 6})
+                     })
           results (complete-topology cluster
                                      topology
                                      :mock-sources {"1" [["a"]]})]
@@ -122,16 +113,13 @@
     (let [feeder (feeder-spout ["field1"])
           tracker (AckFailMapTracker.)
           _ (.setAckFailDelegate feeder tracker)
-          topology (Thrift/buildTopology
-                     {"1" (Thrift/prepareSpoutDetails feeder)}
-                     {"2" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "1" nil)
-                             (Thrift/prepareGlobalGrouping)} ack-every-other)})]
+          topology (thrift/mk-topology
+                     {"1" (thrift/mk-spout-spec feeder)}
+                     {"2" (thrift/mk-bolt-spec {"1" :global} ack-every-other)})]      
       (submit-local-topology (:nimbus cluster)
                              "timeout-tester"
                              {TOPOLOGY-MESSAGE-TIMEOUT-SECS 10}
                              topology)
-      (advance-cluster-time cluster 11)
       (.feed feeder ["a"] 1)
       (.feed feeder ["b"] 2)
       (.feed feeder ["c"] 3)
@@ -161,11 +149,9 @@
     (let [feeder (feeder-spout ["field1"])
           tracker (AckFailMapTracker.)
           _ (.setAckFailDelegate feeder tracker)
-          topology (Thrift/buildTopology
-                     {"1" (Thrift/prepareSpoutDetails feeder)}
-                     {"2" (Thrift/prepareBoltDetails 
-                            {(Utils/getGlobalStreamId "1" nil)
-                             (Thrift/prepareGlobalGrouping)} extend-timeout-twice)})]
+          topology (thrift/mk-topology
+                     {"1" (thrift/mk-spout-spec feeder)}
+                     {"2" (thrift/mk-bolt-spec {"1" :global} extend-timeout-twice)})]
     (submit-local-topology (:nimbus cluster)
                            "timeout-tester"
                            {TOPOLOGY-MESSAGE-TIMEOUT-SECS 10}
@@ -180,36 +166,24 @@
     )))
 
 (defn mk-validate-topology-1 []
-  (Thrift/buildTopology
-                    {"1" (Thrift/prepareSpoutDetails (TestWordSpout. true) (Integer. 3))}
-                    {"2" (Thrift/prepareBoltDetails
-                           {(Utils/getGlobalStreamId "1" nil)
-                            (Thrift/prepareFieldsGrouping ["word"])}
-                           (TestWordCounter.) (Integer. 4))}))
+  (thrift/mk-topology
+                    {"1" (thrift/mk-spout-spec (TestWordSpout. true) :parallelism-hint 3)}
+                    {"2" (thrift/mk-bolt-spec {"1" ["word"]} (TestWordCounter.) :parallelism-hint 4)}))
 
 (defn mk-invalidate-topology-1 []
-  (Thrift/buildTopology
-                    {"1" (Thrift/prepareSpoutDetails (TestWordSpout. true) (Integer. 3))}
-                    {"2" (Thrift/prepareBoltDetails
-                           {(Utils/getGlobalStreamId "3" nil)
-                            (Thrift/prepareFieldsGrouping ["word"])}
-                           (TestWordCounter.) (Integer. 4))}))
+  (thrift/mk-topology
+                    {"1" (thrift/mk-spout-spec (TestWordSpout. true) :parallelism-hint 3)}
+                    {"2" (thrift/mk-bolt-spec {"3" ["word"]} (TestWordCounter.) :parallelism-hint 4)}))
 
 (defn mk-invalidate-topology-2 []
-  (Thrift/buildTopology
-                    {"1" (Thrift/prepareSpoutDetails (TestWordSpout. true) (Integer. 3))}
-                    {"2" (Thrift/prepareBoltDetails
-                           {(Utils/getGlobalStreamId "1" nil)
-                            (Thrift/prepareFieldsGrouping ["non-exists-field"])}
-                           (TestWordCounter.) (Integer. 4))}))
+  (thrift/mk-topology
+                    {"1" (thrift/mk-spout-spec (TestWordSpout. true) :parallelism-hint 3)}
+                    {"2" (thrift/mk-bolt-spec {"1" ["non-exists-field"]} (TestWordCounter.) :parallelism-hint 4)}))
 
 (defn mk-invalidate-topology-3 []
-  (Thrift/buildTopology
-                    {"1" (Thrift/prepareSpoutDetails (TestWordSpout. true) (Integer. 3))}
-                    {"2" (Thrift/prepareBoltDetails
-                           {(Utils/getGlobalStreamId "1" "non-exists-stream")
-                            (Thrift/prepareFieldsGrouping ["word"])}
-                           (TestWordCounter.) (Integer. 4))}))
+  (thrift/mk-topology
+                    {"1" (thrift/mk-spout-spec (TestWordSpout. true) :parallelism-hint 3)}
+                    {"2" (thrift/mk-bolt-spec {["1" "non-exists-stream"] ["word"]} (TestWordCounter.) :parallelism-hint 4)}))
 
 (defn try-complete-wc-topology [cluster topology]
   (try (do
@@ -239,15 +213,10 @@
 (deftest test-system-stream
   ;; this test works because mocking a spout splits up the tuples evenly among the tasks
   (with-simulated-time-local-cluster [cluster]
-      (let [topology (Thrift/buildTopology
-                       {"1" (Thrift/prepareSpoutDetails
-                              (TestWordSpout. true) (Integer. 3))}
-                       {"2" (Thrift/prepareBoltDetails
-                              {(Utils/getGlobalStreamId "1" nil)
-                               (Thrift/prepareFieldsGrouping ["word"])
-                               (Utils/getGlobalStreamId "1" "__system")
-                               (Thrift/prepareGlobalGrouping)}
-                               identity-bolt (Integer. 1))})
+      (let [topology (thrift/mk-topology
+                      {"1" (thrift/mk-spout-spec (TestWordSpout. true) :p 3)}
+                      {"2" (thrift/mk-bolt-spec {"1" ["word"] ["1" "__system"] :global} identity-bolt :p 1)
+                       })
             results (complete-topology cluster
                                        topology
                                        :mock-sources {"1" [["a"] ["b"] ["c"]]}
@@ -298,44 +267,25 @@
           [feeder3 checker3] (ack-tracking-feeder ["num"])
           tracked (mk-tracked-topology
                    cluster
-                   (Thrift/buildTopology
-                     {"1" (Thrift/prepareSpoutDetails feeder1)
-                      "2" (Thrift/prepareSpoutDetails feeder2)
-                      "3" (Thrift/prepareSpoutDetails feeder3)}
-                     {"4" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "1" nil)
-                             (Thrift/prepareShuffleGrouping)}
-                            (branching-bolt 2))
-                      "5" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "2" nil)
-                             (Thrift/prepareShuffleGrouping)}
-                            (branching-bolt 4))
-                      "6" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "3" nil)
-                             (Thrift/prepareShuffleGrouping)}
-                            (branching-bolt 1))
-                      "7" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "4" nil)
-                             (Thrift/prepareShuffleGrouping)
-                             (Utils/getGlobalStreamId "5" nil)
-                             (Thrift/prepareShuffleGrouping)
-                             (Utils/getGlobalStreamId "6" nil)
-                             (Thrift/prepareShuffleGrouping)}
+                   (topology
+                     {"1" (spout-spec feeder1)
+                      "2" (spout-spec feeder2)
+                      "3" (spout-spec feeder3)}
+                     {"4" (bolt-spec {"1" :shuffle} (branching-bolt 2))
+                      "5" (bolt-spec {"2" :shuffle} (branching-bolt 4))
+                      "6" (bolt-spec {"3" :shuffle} (branching-bolt 1))
+                      "7" (bolt-spec
+                            {"4" :shuffle
+                            "5" :shuffle
+                            "6" :shuffle}
                             (agg-bolt 3))
-                      "8" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "7" nil)
-                             (Thrift/prepareShuffleGrouping)}
-                            (branching-bolt 2))
-                      "9" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "8" nil)
-                             (Thrift/prepareShuffleGrouping)}
-                            ack-bolt)}
+                      "8" (bolt-spec {"7" :shuffle} (branching-bolt 2))
+                      "9" (bolt-spec {"8" :shuffle} ack-bolt)}
                      ))]
       (submit-local-topology (:nimbus cluster)
                              "acking-test1"
                              {}
                              (:topology tracked))
-      (advance-cluster-time cluster 11)
       (.feed feeder1 [1])
       (tracked-wait tracked 1)
       (checker1 0)
@@ -366,27 +316,18 @@
     (let [[feeder checker] (ack-tracking-feeder ["num"])
           tracked (mk-tracked-topology
                    cluster
-                   (Thrift/buildTopology
-                     {"1" (Thrift/prepareSpoutDetails feeder)}
-                     {"2" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "1" nil)
-                             (Thrift/prepareShuffleGrouping)}
-                            identity-bolt)
-                      "3" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "1" nil)
-                             (Thrift/prepareShuffleGrouping)}
-                            identity-bolt)
-                      "4" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "2" nil)
-                             (Thrift/prepareShuffleGrouping)
-                             (Utils/getGlobalStreamId "3" nil)
-                             (Thrift/prepareShuffleGrouping)}
+                   (topology
+                     {"1" (spout-spec feeder)}
+                     {"2" (bolt-spec {"1" :shuffle} identity-bolt)
+                      "3" (bolt-spec {"1" :shuffle} identity-bolt)
+                      "4" (bolt-spec
+                            {"2" :shuffle
+                             "3" :shuffle}
                              (agg-bolt 4))}))]
       (submit-local-topology (:nimbus cluster)
                              "test-acking2"
                              {}
                              (:topology tracked))
-      (advance-cluster-time cluster 11)
       (.feed feeder [1])
       (tracked-wait tracked 1)
       (checker 0)
@@ -420,13 +361,10 @@
     (let [feeder (feeder-spout ["field1"])
           tracker (AckFailMapTracker.)
           _ (.setAckFailDelegate feeder tracker)
-          topology (Thrift/buildTopology
-                    {"1" (Thrift/prepareSpoutDetails feeder)
-                     "2" (Thrift/prepareSpoutDetails open-tracked-spout)}
-                    {"3" (Thrift/prepareBoltDetails
-                           {(Utils/getGlobalStreamId "1" nil)
-                            (Thrift/prepareGlobalGrouping)}
-                           prepare-tracked-bolt)})]
+          topology (thrift/mk-topology
+                    {"1" (thrift/mk-spout-spec feeder)
+                     "2" (thrift/mk-spout-spec open-tracked-spout)}
+                    {"3" (thrift/mk-bolt-spec {"1" :global} prepare-tracked-bolt)})]
       (reset! bolt-prepared? false)
       (reset! spout-opened? false)      
       
@@ -435,8 +373,7 @@
         {TOPOLOGY-MESSAGE-TIMEOUT-SECS 10}
         topology
         (SubmitOptions. TopologyInitialStatus/INACTIVE))
-      (advance-cluster-time cluster 11)
-      (.feed feeder ["a"] 1)
+      (.feedNoWait feeder ["a"] 1)
       (advance-cluster-time cluster 9)
       (is (not @bolt-prepared?))
       (is (not @spout-opened?))        
@@ -452,21 +389,14 @@
     (let [[feeder checker] (ack-tracking-feeder ["num"])
           tracked (mk-tracked-topology
                    cluster
-                   (Thrift/buildTopology
-                     {"1" (Thrift/prepareSpoutDetails feeder)}
-                     {"2" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "1" nil)
-                             (Thrift/prepareShuffleGrouping)}
-                            dup-anchor)
-                      "3" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "2" nil)
-                             (Thrift/prepareShuffleGrouping)}
-                            ack-bolt)}))]
+                   (topology
+                     {"1" (spout-spec feeder)}
+                     {"2" (bolt-spec {"1" :shuffle} dup-anchor)
+                      "3" (bolt-spec {"2" :shuffle} ack-bolt)}))]
       (submit-local-topology (:nimbus cluster)
                              "test"
                              {}
                              (:topology tracked))
-      (advance-cluster-time cluster 11)
       (.feed feeder [1])
       (tracked-wait tracked 1)
       (checker 1)
@@ -476,6 +406,36 @@
       (tracked-wait tracked 3)
       (checker 3)
       )))
+
+;; (defspout ConstantSpout ["val"] {:prepare false}
+;;   [collector]
+;;   (Time/sleep 100)
+;;   (emit-spout! collector [1]))
+
+;; (def errored (atom false))
+;; (def restarted (atom false))
+
+;; (defbolt local-error-checker {} [tuple collector]
+;;   (when-not @errored
+;;     (reset! errored true)
+;;     (println "erroring")
+;;     (throw (RuntimeException.)))
+;;   (when-not @restarted (println "restarted"))
+;;   (reset! restarted true))
+
+;; (deftest test-no-halt-local-mode
+;;   (with-simulated-time-local-cluster [cluster]
+;;       (let [topology (topology
+;;                       {1 (spout-spec ConstantSpout)}
+;;                       {2 (bolt-spec {1 :shuffle} local-error-checker)
+;;                        })]
+;;         (submit-local-topology (:nimbus cluster)
+;;                                "test"
+;;                                {}
+;;                                topology)
+;;         (while (not @restarted)
+;;           (advance-time-ms! 100))
+;;         )))
 
 (defspout IncSpout ["word"]
   [conf context collector]
@@ -501,54 +461,89 @@
        )
      )))
 
+;; (deftest test-clojure-spout
+;;   (with-local-cluster [cluster]
+;;     (let [nimbus (:nimbus cluster)
+;;           top (topology
+;;                {1 (spout-spec IncSpout)}
+;;                {}
+;;                )]
+;;       (submit-local-topology nimbus
+;;                              "spout-test"
+;;                              {TOPOLOGY-DEBUG true
+;;                               TOPOLOGY-MESSAGE-TIMEOUT-SECS 3}
+;;                              top)
+;;       (Thread/sleep 10000)
+;;       (.killTopology nimbus "spout-test")
+;;       (Thread/sleep 10000)
+;;       )))
+
 (deftest test-kryo-decorators-config
   (with-simulated-time-local-cluster [cluster
                                       :daemon-conf {TOPOLOGY-SKIP-MISSING-KRYO-REGISTRATIONS true
                                                     TOPOLOGY-KRYO-DECORATORS ["this-is-overriden"]}]
-    (let [builder (TopologyBuilder.)
-          _ (.setSpout builder "1" (TestPlannerSpout. (Fields. ["conf"])))
-          _ (-> builder (.setBolt "2" (TestConfBolt. {TOPOLOGY-KRYO-DECORATORS ["one" "two"]})) (.shuffleGrouping "1"))
-          results (complete-topology cluster
-                                     (.createTopology builder)
-                                     :storm-conf {TOPOLOGY-KRYO-DECORATORS ["one" "three"]}
-                                     :mock-sources {"1" [[TOPOLOGY-KRYO-DECORATORS]]})]
-      (is (= {"topology.kryo.decorators" (list "one" "two" "three")}
-             (->> (read-tuples results "2") (apply concat) (apply hash-map)))))))
+    (letlocals
+     (bind builder (TopologyBuilder.))
+     (.setSpout builder "1" (TestPlannerSpout. (Fields. ["conf"])))
+     (-> builder
+         (.setBolt "2"
+                   (TestConfBolt.
+                    {TOPOLOGY-KRYO-DECORATORS ["one" "two"]}))
+         (.shuffleGrouping "1"))
+     
+     (bind results
+           (complete-topology cluster
+                              (.createTopology builder)
+                              :storm-conf {TOPOLOGY-KRYO-DECORATORS ["one" "three"]}
+                              :mock-sources {"1" [[TOPOLOGY-KRYO-DECORATORS]]}))
+     (is (= {"topology.kryo.decorators" (list "one" "two" "three")}            
+            (->> (read-tuples results "2")
+                 (apply concat)
+                 (apply hash-map)))))))
 
 (deftest test-component-specific-config
   (with-simulated-time-local-cluster [cluster
                                       :daemon-conf {TOPOLOGY-SKIP-MISSING-KRYO-REGISTRATIONS true}]
-    (let [builder (TopologyBuilder.)
-          _ (.setSpout builder "1" (TestPlannerSpout. (Fields. ["conf"])))
-          _ (-> builder
-                (.setBolt "2"
-                          (TestConfBolt.
-                            {"fake.config" 123
-                             TOPOLOGY-MAX-TASK-PARALLELISM 20
-                             TOPOLOGY-MAX-SPOUT-PENDING 30
-                             TOPOLOGY-KRYO-REGISTER [{"fake.type" "bad.serializer"}
-                                                     {"fake.type2" "a.serializer"}]}))
-                (.shuffleGrouping "1")
-                (.setMaxTaskParallelism (int 2))
-                (.addConfiguration "fake.config2" 987))
-          results (complete-topology cluster
-                                     (.createTopology builder)
-                                     :storm-conf {TOPOLOGY-KRYO-REGISTER [{"fake.type" "good.serializer", "fake.type3" "a.serializer3"}]}
-                                     :mock-sources {"1" [["fake.config"]
-                                                         [TOPOLOGY-MAX-TASK-PARALLELISM]
-                                                         [TOPOLOGY-MAX-SPOUT-PENDING]
-                                                         ["fake.config2"]
-                                                         [TOPOLOGY-KRYO-REGISTER]]})]
-      (is (= {"fake.config" 123
-              "fake.config2" 987
-              TOPOLOGY-MAX-TASK-PARALLELISM 2
-              TOPOLOGY-MAX-SPOUT-PENDING 30
-              TOPOLOGY-KRYO-REGISTER {"fake.type" "good.serializer"
-                                      "fake.type2" "a.serializer"
-                                      "fake.type3" "a.serializer3"}}
-             (->> (read-tuples results "2")
-                  (apply concat)
-                  (apply hash-map)))))))
+    (letlocals
+     (bind builder (TopologyBuilder.))
+     (.setSpout builder "1" (TestPlannerSpout. (Fields. ["conf"])))
+     (-> builder
+         (.setBolt "2"
+                   (TestConfBolt.
+                    {"fake.config" 123
+                     TOPOLOGY-MAX-TASK-PARALLELISM 20
+                     TOPOLOGY-MAX-SPOUT-PENDING 30
+                     TOPOLOGY-KRYO-REGISTER [{"fake.type" "bad.serializer"}
+                                             {"fake.type2" "a.serializer"}]
+                     }))
+         (.shuffleGrouping "1")
+         (.setMaxTaskParallelism (int 2))
+         (.addConfiguration "fake.config2" 987)
+         )
+     
+
+     (bind results
+           (complete-topology cluster
+                              (.createTopology builder)
+                              :storm-conf {TOPOLOGY-KRYO-REGISTER [{"fake.type" "good.serializer" "fake.type3" "a.serializer3"}]}
+                              :mock-sources {"1" [["fake.config"]
+                                                  [TOPOLOGY-MAX-TASK-PARALLELISM]
+                                                  [TOPOLOGY-MAX-SPOUT-PENDING]
+                                                  ["fake.config2"]
+                                                  [TOPOLOGY-KRYO-REGISTER]
+                                                  ]}))
+     (is (= {"fake.config" 123
+             "fake.config2" 987
+             TOPOLOGY-MAX-TASK-PARALLELISM 2
+             TOPOLOGY-MAX-SPOUT-PENDING 30
+             TOPOLOGY-KRYO-REGISTER {"fake.type" "good.serializer"
+                                     "fake.type2" "a.serializer"
+                                     "fake.type3" "a.serializer3"}}
+            (->> (read-tuples results "2")
+                 (apply concat)
+                 (apply hash-map))
+            ))
+     )))
 
 (defbolt hooks-bolt ["emit" "ack" "fail" "executed"] {:prepare true}
   [conf context collector]
@@ -581,13 +576,11 @@
 
 (deftest test-hooks
   (with-simulated-time-local-cluster [cluster]
-    (let [topology (Thrift/buildTopology
-                     {"1" (Thrift/prepareSpoutDetails
-                            (TestPlannerSpout. (Fields. ["conf"])))}
-                     {"2" (Thrift/prepareBoltDetails
-                            {(Utils/getGlobalStreamId "1" nil)
-                             (Thrift/prepareShuffleGrouping)}
-                            hooks-bolt)})
+    (let [topology (topology {"1" (spout-spec (TestPlannerSpout. (Fields. ["conf"])))
+                              }
+                             {"2" (bolt-spec {"1" :shuffle}
+                                             hooks-bolt)
+                              })
           results (complete-topology cluster
                                      topology
                                      :mock-sources {"1" [[1]
@@ -602,63 +595,42 @@
              (read-tuples results "2")
              )))))
 
-(defbolt report-errors-bolt {}
-  [tuple collector]
-  (doseq [i (range (.getValue tuple 0))]
-    (report-error! collector (RuntimeException.)))
-  (ack! collector tuple))
-
+;;This is more of a unit test, but getting the timing right for
+;; an integration test is really hard
 (deftest test-throttled-errors
   (with-simulated-time
-    (with-tracked-cluster [cluster]
-      (let [state (:storm-cluster-state cluster)
-            [feeder checker] (ack-tracking-feeder ["num"])
-            tracked (mk-tracked-topology
-                     cluster
-                     (Thrift/buildTopology
-                       {"1" (Thrift/prepareSpoutDetails feeder)}
-                       {"2" (Thrift/prepareBoltDetails
-                              {(Utils/getGlobalStreamId "1" nil)
-                               (Thrift/prepareShuffleGrouping)}
-                              report-errors-bolt)}))
-            _       (submit-local-topology (:nimbus cluster)
-                                             "test-errors"
-                                             {TOPOLOGY-ERROR-THROTTLE-INTERVAL-SECS 10
-                                              TOPOLOGY-MAX-ERROR-REPORT-PER-INTERVAL 4
-                                              TOPOLOGY-DEBUG true
-                                              }
-                                             (:topology tracked))
-            _ (advance-cluster-time cluster 11)
-            storm-id (StormCommon/getStormId state "test-errors")
-            errors-count (fn [] (count (.errors state storm-id "2")))]
-
-        (is (nil? (clojurify-error (.lastError state storm-id "2"))))
-
-        ;; so it launches the topology
-        (advance-cluster-time cluster 2)
-        (.feed feeder [6])
-        (tracked-wait tracked 1)
-        (is (= 4 (errors-count)))
-        (is (clojurify-error (.lastError state storm-id "2")))
-        
-        (advance-time-secs! 5)
-        (.feed feeder [2])
-        (tracked-wait tracked 1)
-        (is (= 4 (errors-count)))
-        (is (clojurify-error (.lastError state storm-id "2")))
-        
-        (advance-time-secs! 6)
-        (.feed feeder [2])
-        (tracked-wait tracked 1)
-        (is (= 6 (errors-count)))
-        (is (clojurify-error (.lastError state storm-id "2")))
-        
-        (advance-time-secs! 6)
-        (.feed feeder [3])
-        (tracked-wait tracked 1)
-        (is (= 8 (errors-count)))
-        (is  (clojurify-error (.lastError state storm-id "2")))))))
-
+    (let [error-count (atom 0)
+          worker-context (Mockito/mock WorkerTopologyContext)
+          cluster-state
+             (reify cluster/StormClusterState
+               (report-error
+                 [this storm-id component-id node port error]
+                 (swap! error-count inc)))
+          error-fn (executor/throttled-report-error-fn 
+            {:storm-conf {TOPOLOGY-ERROR-THROTTLE-INTERVAL-SECS 10
+                          TOPOLOGY-MAX-ERROR-REPORT-PER-INTERVAL 4}
+             :storm-cluster-state cluster-state
+             :storm-id "topo"
+             :component-id "comp"
+             :worker-context worker-context})]
+        (. (Mockito/when (.getThisWorkerPort worker-context)) (thenReturn (Integer. 8080))) 
+        (error-fn (RuntimeException. "ERROR-1"))
+        (is (= 1 @error-count))
+        (error-fn (RuntimeException. "ERROR-2"))
+        (is (= 2 @error-count))
+        (error-fn (RuntimeException. "ERROR-3"))
+        (is (= 3 @error-count))
+        (error-fn (RuntimeException. "ERROR-4"))
+        (is (= 4 @error-count))
+        ;;Ignored
+        (error-fn (RuntimeException. "ERROR-5"))
+        (is (= 4 @error-count))
+        (Time/advanceTime 9000)
+        (error-fn (RuntimeException. "ERROR-6"))
+        (is (= 4 @error-count))
+        (Time/advanceTime 2000)
+        (error-fn (RuntimeException. "ERROR-7"))
+        (is (= 5 @error-count)))))
 
 (deftest test-acking-branching-complex
   ;; test acking with branching in the topology

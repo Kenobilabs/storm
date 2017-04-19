@@ -18,18 +18,16 @@
   (:require [org.apache.storm.daemon [drpc :as drpc]])
   (:import [org.apache.storm.generated AuthorizationException
             DRPCExecutionException DistributedRPC$Processor
-            DistributedRPCInvocations$Processor]
-           [org.apache.storm.daemon DrpcServer])
+            DistributedRPCInvocations$Processor])
   (:import [org.apache.storm Config])
   (:import [org.apache.storm.security.auth ReqContext SingleUserPrincipal ThriftServer ThriftConnectionType])
-  (:import [org.apache.storm.utils DRPCClient ConfigUtils])
+  (:import [org.apache.storm.utils DRPCClient])
   (:import [org.apache.storm.drpc DRPCInvocationsClient])
   (:import [java.util.concurrent TimeUnit])
   (:import [javax.security.auth Subject])
   (:use [org.apache.storm util config log])
   (:use [org.apache.storm.daemon common])
-  (:use [org.apache.storm testing])
-  (:import [org.apache.storm.utils Utils]))
+  (:use [org.apache.storm testing]))
 
 (def DRPC-TIMEOUT-SEC (* (/ TEST-TIMEOUT-MS 1000) 2))
 
@@ -39,7 +37,7 @@
         conf (if login-cfg (assoc conf "java.security.auth.login.config" login-cfg) conf)
         conf (assoc conf DRPC-PORT client-port)
         conf (assoc conf DRPC-INVOCATIONS-PORT invocations-port)
-        service-handler (DrpcServer. conf)
+        service-handler (drpc/service-handler conf)
         handler-server (ThriftServer. conf
                                       (DistributedRPC$Processor. service-handler)
                                       ThriftConnectionType/DRPC)
@@ -65,9 +63,9 @@
       ))
 
 (deftest deny-drpc-test
-  (let [client-port (Utils/getAvailablePort)
-        invocations-port (Utils/getAvailablePort (int(inc client-port)))
-        storm-conf (clojurify-structure (ConfigUtils/readStormConfig))]
+  (let [client-port (available-port)
+        invocations-port (available-port (inc client-port))
+        storm-conf (read-storm-config)]
     (with-server [storm-conf "org.apache.storm.security.auth.authorizer.DenyAuthorizer"
                   nil nil client-port invocations-port]
       (let [drpc (DRPCClient. storm-conf "localhost" client-port)
@@ -80,9 +78,9 @@
         (.close invocations)))))
 
 (deftest deny-drpc-digest-test
-  (let [client-port (Utils/getAvailablePort)
-        invocations-port (Utils/getAvailablePort (int (inc client-port)))
-        storm-conf (clojurify-structure (ConfigUtils/readStormConfig))]
+  (let [client-port (available-port)
+        invocations-port (available-port (inc client-port))
+        storm-conf (read-storm-config)]
     (with-server [storm-conf "org.apache.storm.security.auth.authorizer.DenyAuthorizer"
                   "org.apache.storm.security.auth.digest.DigestSaslTransportPlugin"
                   "test/clj/org/apache/storm/security/auth/jaas_digest.conf"
@@ -100,42 +98,42 @@
 
 (defmacro with-simple-drpc-test-scenario
   [[strict? alice-client bob-client charlie-client alice-invok charlie-invok] & body]
-  (let [client-port (Utils/getAvailablePort)
-        invocations-port (Utils/getAvailablePort (int (inc client-port)))
-        storm-conf (merge (clojurify-structure (ConfigUtils/readStormConfig))
-                          {DRPC-AUTHORIZER-ACL-STRICT strict?
+  `(let [client-port# (available-port)
+         invocations-port# (available-port (inc client-port#))
+         storm-conf# (merge (read-storm-config)
+                          {DRPC-AUTHORIZER-ACL-STRICT ~strict?
                            DRPC-AUTHORIZER-ACL-FILENAME "drpc-simple-acl-test-scenario.yaml"
                            STORM-THRIFT-TRANSPORT-PLUGIN "org.apache.storm.security.auth.digest.DigestSaslTransportPlugin"})]
-    `(with-server [~storm-conf
+    (with-server [storm-conf#
                    "org.apache.storm.security.auth.authorizer.DRPCSimpleACLAuthorizer"
                    "org.apache.storm.security.auth.digest.DigestSaslTransportPlugin"
                    "test/clj/org/apache/storm/security/auth/drpc-auth-server.jaas"
-                   ~client-port ~invocations-port]
+                   client-port# invocations-port#]
        (let [~alice-client (DRPCClient.
-                           (merge ~storm-conf {"java.security.auth.login.config"
+                           (merge storm-conf# {"java.security.auth.login.config"
                                               "test/clj/org/apache/storm/security/auth/drpc-auth-alice.jaas"})
                            "localhost"
-                           ~client-port)
+                           client-port#)
              ~bob-client (DRPCClient.
-                         (merge ~storm-conf {"java.security.auth.login.config"
+                         (merge storm-conf# {"java.security.auth.login.config"
                                             "test/clj/org/apache/storm/security/auth/drpc-auth-bob.jaas"})
                          "localhost"
-                         ~client-port)
+                         client-port#)
              ~charlie-client (DRPCClient.
-                               (merge ~storm-conf {"java.security.auth.login.config"
+                               (merge storm-conf# {"java.security.auth.login.config"
                                                   "test/clj/org/apache/storm/security/auth/drpc-auth-charlie.jaas"})
                                "localhost"
-                               ~client-port)
+                               client-port#)
              ~alice-invok (DRPCInvocationsClient.
-                            (merge ~storm-conf {"java.security.auth.login.config"
+                            (merge storm-conf# {"java.security.auth.login.config"
                                                "test/clj/org/apache/storm/security/auth/drpc-auth-alice.jaas"})
                             "localhost"
-                            ~invocations-port)
+                            invocations-port#)
              ~charlie-invok (DRPCInvocationsClient.
-                             (merge ~storm-conf {"java.security.auth.login.config"
+                             (merge storm-conf# {"java.security.auth.login.config"
                                                 "test/clj/org/apache/storm/security/auth/drpc-auth-charlie.jaas"})
                              "localhost"
-                             ~invocations-port)]
+                             invocations-port#)]
          (try
            ~@body
            (finally

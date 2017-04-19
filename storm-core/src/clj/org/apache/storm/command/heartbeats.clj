@@ -17,28 +17,26 @@
   (:require [org.apache.storm
              [config :refer :all]
              [log :refer :all]
-             [util :refer :all]
+             [cluster :refer :all]
              [converter :refer :all]]
-            [clojure.string :as string])
+        [clojure.string :refer :all])
   (:import [org.apache.storm.generated ClusterWorkerHeartbeat]
-           [org.apache.storm.utils Utils ConfigUtils]
-           [org.apache.storm.cluster ZKStateStorage ClusterStateContext ClusterUtils]
-           [org.apache.storm.stats StatsUtil])
+           [org.apache.storm.utils Utils])
   (:gen-class))
 
 (defn -main [command path & args]
-  (let [conf (clojurify-structure (ConfigUtils/readStormConfig))
-        cluster (ClusterUtils/mkStateStorage conf conf nil (ClusterStateContext.))]
+  (let [conf (read-storm-config)
+        cluster (mk-distributed-cluster-state conf :auth-conf conf)]
     (println "Command: [" command "]")
     (condp = command
       "list"
-      (let [message (clojure.string/join " \n" (.get_worker_hb_children cluster path false))]
+      (let [message (join " \n" (.get_worker_hb_children cluster path false))]
         (log-message "list " path ":\n"
                      message "\n"))
       "get"
       (log-message 
        (if-let [hb (.get_worker_hb cluster path false)]
-         (StatsUtil/convertZkWorkerHb
+         (clojurify-zk-worker-hb
           (Utils/deserialize
            hb
            ClusterWorkerHeartbeat))

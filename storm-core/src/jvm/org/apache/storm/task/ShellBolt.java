@@ -70,6 +70,8 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 public class ShellBolt implements IBolt {
     public static final String HEARTBEAT_STREAM_ID = "__heartbeat";
     public static final Logger LOG = LoggerFactory.getLogger(ShellBolt.class);
+    private static final long serialVersionUID = -339575186639193348L;
+
     OutputCollector _collector;
     Map<String, Tuple> _inputs = new ConcurrentHashMap<>();
 
@@ -90,6 +92,8 @@ public class ShellBolt implements IBolt {
     private ScheduledExecutorService heartBeatExecutorService;
     private AtomicLong lastHeartbeatTimestamp = new AtomicLong();
     private AtomicBoolean sendHeartbeatFlag = new AtomicBoolean(false);
+    private boolean _isLocalMode = false;
+    private boolean changeDirectory = true;
 
     public ShellBolt(ShellComponent component) {
         this(component.get_execution_command(), component.get_script());
@@ -102,6 +106,21 @@ public class ShellBolt implements IBolt {
     public ShellBolt setEnv(Map<String, String> env) {
         this.env = env;
         return this;
+    }
+
+    public boolean shouldChangeChildCWD() {
+        return changeDirectory;
+    }
+
+    /**
+     * Set if the current working directory of the child process should change
+     * to the resources dir from extracted from the jar, or if it should stay
+     * the same as the worker process to access things from the blob store.
+     * @param changeDirectory true change the directory (default) false
+     * leave the directory the same as the worker process.
+     */
+    public void changeChildCWD(boolean changeDirectory) {
+        this.changeDirectory = changeDirectory;
     }
 
     public void prepare(Map stormConf, TopologyContext context,
@@ -128,7 +147,7 @@ public class ShellBolt implements IBolt {
         }
 
         //subprocesses must send their pid first thing
-        Number subpid = _process.launch(stormConf, context);
+        Number subpid = _process.launch(stormConf, context, changeDirectory);
         LOG.info("Launched subprocess with pid " + subpid);
 
         // reader
@@ -138,11 +157,11 @@ public class ShellBolt implements IBolt {
         _writerThread = new Thread(new BoltWriterRunnable());
         _writerThread.start();
 
-        heartBeatExecutorService = MoreExecutors.getExitingScheduledExecutorService(new ScheduledThreadPoolExecutor(1));
-        heartBeatExecutorService.scheduleAtFixedRate(new BoltHeartbeatTimerTask(this), 1, 1, TimeUnit.SECONDS);
-
         LOG.info("Start checking heartbeat...");
         setHeartbeat();
+
+        heartBeatExecutorService = MoreExecutors.getExitingScheduledExecutorService(new ScheduledThreadPoolExecutor(1));
+        heartBeatExecutorService.scheduleAtFixedRate(new BoltHeartbeatTimerTask(this), 1, 1, TimeUnit.SECONDS);
     }
 
     public void execute(Tuple input) {
@@ -158,8 +177,8 @@ public class ShellBolt implements IBolt {
 
             _pendingWrites.putBoltMsg(boltMsg);
         } catch(InterruptedException e) {
-            String processInfo = _process.getProcessInfoString() + _process.getProcessTerminationInfoString();
-            throw new RuntimeException("Error during multilang processing " + processInfo, e);
+            // It's likely that Bolt is shutting down so no need to throw RuntimeException
+            // just ignore
         }
     }
 
@@ -361,6 +380,8 @@ public class ShellBolt implements IBolt {
                             break;
                     }
                 } catch (InterruptedException e) {
+                    // It's likely that Bolt is shutting down so no need to die.
+                    // just ignore and loop will be terminated eventually
                 } catch (Throwable t) {
                     die(t);
                 }
@@ -384,10 +405,14 @@ public class ShellBolt implements IBolt {
                     if (write instanceof BoltMsg) {
                         _process.writeBoltMsg((BoltMsg) write);
                     } else if (write instanceof List<?>) {
-                        _process.writeTaskIds((List<Integer>)write);
+                        _process.writeTaskIds((List<Integer>) write);
                     } else if (write != null) {
-                        throw new RuntimeException("Unknown class type to write: " + write.getClass().getName());
+                        throw new RuntimeException(
+                            "Unknown class type to write: " + write.getClass().getName());
                     }
+                } catch (InterruptedException e) {
+                    // It's likely that Bolt is shutting down so no need to die.
+                    // just ignore and loop will be terminated eventually
                 } catch (Throwable t) {
                     die(t);
                 }

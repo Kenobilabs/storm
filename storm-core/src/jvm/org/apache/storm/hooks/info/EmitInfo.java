@@ -17,9 +17,6 @@
  */
 package org.apache.storm.hooks.info;
 
-import org.apache.storm.hooks.ITaskHook;
-import org.apache.storm.task.TopologyContext;
-
 import java.util.Collection;
 import java.util.List;
 
@@ -34,11 +31,5 @@ public class EmitInfo {
         this.stream = stream;
         this.taskId = taskId;
         this.outTasks = outTasks;
-    }
-
-    public void applyOn(TopologyContext topologyContext) {
-        for (ITaskHook hook : topologyContext.getHooks()) {
-            hook.emit(this);
-        }
     }
 }

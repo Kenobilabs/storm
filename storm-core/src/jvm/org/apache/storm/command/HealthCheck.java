@@ -18,6 +18,8 @@
 package org.apache.storm.command;
 
 import org.apache.storm.Config;
+import org.apache.storm.utils.Utils;
+
 import org.apache.storm.utils.ConfigUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -117,9 +119,8 @@ public class HealthCheck {
         }
     }
 
-    public static void main(String[] args) {
-        Map conf = ConfigUtils.readStormConfig();
+    public static void main(String[] args) throws Exception {
+        Map<String, Object> conf = ConfigUtils.readStormConfig();
         System.exit(healthCheck(conf));
     }
-
 }

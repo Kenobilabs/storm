@@ -21,7 +21,7 @@
   (:use [org.apache.storm.daemon.worker :only [is-connection-ready]])
   (:import [java.util ArrayList]))
 
-(def port (Utils/getAvailablePort))
+(def port (available-port))
 (def task 1)
 
 ;; In a "real" cluster (or an integration test), Storm itself would ensure that a topology's workers would only be
@@ -66,7 +66,7 @@
   (log-message "1. Should send and receive a basic message")
   (let [req_msg (String. "0123456789abcdefghijklmnopqrstuvwxyz")
         context (TransportFactory/makeContext storm-conf)
-        port (Utils/getAvailablePort (int 6700))
+        port (available-port 6700)
         resp (atom nil)
         server (.bind context nil port)
         _ (register-callback (fn [message] (reset! resp message)) server)
@@ -104,7 +104,7 @@
   (log-message "2 test load")
   (let [req_msg (String. "0123456789abcdefghijklmnopqrstuvwxyz")
         context (TransportFactory/makeContext storm-conf)
-        port (Utils/getAvailablePort (int 6700))
+        port (available-port 6700)
         resp (atom nil)
         server (.bind context nil port)
         _ (register-callback (fn [message] (reset! resp message)) server)
@@ -112,7 +112,7 @@
         _ (wait-until-ready [server client])
         _ (.send client task (.getBytes req_msg))
         _ (.sendLoadMetrics server {(int 1) 0.0 (int 2) 1.0})
-        _ (while-timeout 5000 (empty? (.getLoad client [(int 1) (int 2)])) (Thread/sleep 10))
+        _ (while-timeout TEST-TIMEOUT-MS (empty? (.getLoad client [(int 1) (int 2)])) (Thread/sleep 10))
         load (.getLoad client [(int 1) (int 2)])]
     (is (= 0.0 (.getBoltLoad (.get load (int 1)))))
     (is (= 1.0 (.getBoltLoad (.get load (int 2)))))
@@ -147,7 +147,7 @@
   (log-message "3 Should send and receive a large message")
   (let [req_msg (apply str (repeat 2048000 'c'))
         context (TransportFactory/makeContext storm-conf)
-        port (Utils/getAvailablePort (int 6700))
+        port (available-port 6700)
         resp (atom nil)
         server (.bind context nil port)
         _ (register-callback (fn [message] (reset! resp message)) server)
@@ -186,7 +186,7 @@
   (let [req_msg (String. "0123456789abcdefghijklmnopqrstuvwxyz")
         context (TransportFactory/makeContext storm-conf)
         resp (atom nil)
-        port (Utils/getAvailablePort (int 6700))
+        port (available-port 6700)
         client (.connect context nil "localhost" port)
 
         server (Thread.
@@ -234,7 +234,7 @@
         resp (ArrayList.)
         received (atom 0)
         context (TransportFactory/makeContext storm-conf)
-        port (Utils/getAvailablePort (int 6700))
+        port (available-port 6700)
         server (.bind context nil port)
         _ (register-callback (fn [message] (.add resp message) (swap! received inc)) server)
         client (.connect context nil "localhost" port)
@@ -292,7 +292,7 @@
                       TOPOLOGY-SKIP-MISSING-KRYO-REGISTRATIONS false}
           resp (atom nil)
           context (TransportFactory/makeContext storm-conf)
-          port (Utils/getAvailablePort (int 6700))
+          port (available-port 6700)
           client (.connect context nil "localhost" port)
           _ (.send client task (.getBytes req_msg))
           server (.bind context nil port)
